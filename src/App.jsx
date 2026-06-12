@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { supabase } from './supabase'
+import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './photoStorage'
 
 const STORAGE_KEY_COMPANY_CODE = "shopguard_company_code";
 
@@ -115,6 +116,7 @@ function incidentRowToIncident(row) {
   const date = row.created_at
     ? new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
     : "";
+  const photoData = row.photo_urls || [];
   return {
     id: row.id,
     type: row.type || "Near Miss",
@@ -123,9 +125,35 @@ function incidentRowToIncident(row) {
     location: row.location || "General",
     reportedBy: row.reported_by || "",
     date,
-    photos: 0,
-    photoData: [],
+    photos: photoData.length,
+    photoData,
     status: row.status || "Open",
+  };
+}
+
+const DEFAULT_INSPECTION_CHECKLIST = [
+  { id: 1, item: "Visual inspection — no visible damage" },
+  { id: 2, item: "Guards and safety devices in place" },
+  { id: 3, item: "No fluid leaks" },
+  { id: 4, item: "Area around machine clear" },
+];
+
+function machineRowToMachine(row) {
+  const ppe = typeof row.ppe === "string" ? JSON.parse(row.ppe || "[]") : (row.ppe || []);
+  const sopSteps = row.sop_steps || [];
+  return {
+    id: row.id,
+    name: row.name,
+    lastInspectedTs: null,
+    sop: sopSteps.length > 0,
+    lototo: row.requires_loto,
+    ppe,
+    activeLocks: [],
+    lototoSteps: [],
+    inspectionLog: [],
+    inspectionChecklist: DEFAULT_INSPECTION_CHECKLIST.map(i => ({ ...i })),
+    sopSteps,
+    pendingSop: null,
   };
 }
 
@@ -267,14 +295,25 @@ function getS() {
   };
 }
 
-function CameraModal({ onClose, onCapture }) {
+function CameraModal({ onClose, onCapture, uploading }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const fileInputRef = useRef(null);
   const streamRef = useRef(null);
   const [captured, setCaptured] = useState(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
   const s = getS();
+
+  function chooseFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    const reader = new FileReader();
+    reader.onload = () => { onClose(); onCapture(reader.result); };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
   useEffect(() => {
     async function start() {
       try {
@@ -308,23 +347,34 @@ function CameraModal({ onClose, onCapture }) {
           <div style={{ color: "#ff6b00", fontWeight: 700, fontSize: 15, letterSpacing: 1, marginBottom: 8 }}>CAMERA NOT AVAILABLE</div>
           <div style={{ color: "#888", fontSize: 13, marginBottom: 24, lineHeight: 1.6 }}>On a real phone this opens your camera.</div>
           <div style={{ background: "#161a23", border: "2px dashed #333", width: 260, height: 180, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 24px", color: "#444", fontSize: 12, letterSpacing: 2 }}>VIEWFINDER</div>
-          <button style={{ ...s.primaryBtn, width: 260 }} onClick={() => { onCapture("simulated"); onClose(); }}>📎 ATTACH PHOTO (SIMULATED)</button>
+          <button style={{ ...s.primaryBtn, width: 260, marginBottom: 10, opacity: uploading ? 0.6 : 1 }} disabled={uploading} onClick={() => { onCapture("simulated"); onClose(); }}>📎 ATTACH PHOTO (SIMULATED)</button>
+          <button style={{ ...s.backBtn, width: 260, padding: 14, opacity: uploading ? 0.6 : 1 }} disabled={uploading} onClick={() => fileInputRef.current?.click()}>🖼 CHOOSE FROM GALLERY</button>
         </div>}
         {!error && !captured && !loading && <>
           <video ref={videoRef} autoPlay playsInline style={{ width: "100%", maxWidth: 400, border: "2px solid #ff6b00", marginBottom: 20 }} />
-          <button style={{ ...s.primaryBtn, width: 180, fontSize: 20, padding: "18px 0" }} onClick={capture}>⬤ CAPTURE</button>
+          <button style={{ ...s.primaryBtn, width: 180, fontSize: 20, padding: "18px 0", marginBottom: 10, opacity: uploading ? 0.6 : 1 }} disabled={uploading} onClick={capture}>⬤ CAPTURE</button>
+          <button style={{ ...s.backBtn, width: 180, padding: 14, opacity: uploading ? 0.6 : 1 }} disabled={uploading} onClick={() => fileInputRef.current?.click()}>🖼 CHOOSE PHOTO</button>
         </>}
         {captured && <>
           <img src={captured} alt="captured" style={{ width: "100%", maxWidth: 400, marginBottom: 20, border: "2px solid #2ecc71" }} />
           <div style={{ display: "flex", gap: 10, width: "100%", maxWidth: 400 }}>
             <button style={{ ...s.backBtn, flex: 1, padding: 14 }} onClick={() => setCaptured(null)}>RETAKE</button>
-            <button style={{ ...s.primaryBtn, flex: 2 }} onClick={() => { onCapture(captured); onClose(); }}>✓ USE PHOTO</button>
+            <button style={{ ...s.primaryBtn, flex: 2, opacity: uploading ? 0.6 : 1 }} disabled={uploading} onClick={() => { onCapture(captured); onClose(); }}>✓ USE PHOTO</button>
           </div>
         </>}
+        {uploading && <div style={{ color: "#ff6b00", letterSpacing: 2, marginTop: 16 }}>UPLOADING...</div>}
       </div>
       <canvas ref={canvasRef} style={{ display: "none" }} />
+      <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={chooseFile} />
     </div>
   );
+}
+
+function PhotoThumb({ src, style }) {
+  if (src === "simulated" || !isPhotoUrl(src)) {
+    return <div style={{ width: 72, height: 72, background: "#1a2a1a", border: "2px solid #2ecc71", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#2ecc71", letterSpacing: 1, textAlign: "center", flexShrink: 0, ...style }}>📷<br />PHOTO</div>;
+  }
+  return <img src={src} alt="" style={{ width: 72, height: 72, objectFit: "cover", border: "2px solid #2ecc71", flexShrink: 0, ...style }} />;
 }
 
 const LogoMark = ({ size = 18 }) => (
@@ -388,7 +438,8 @@ export default function ShopGuard() {
   const [selectedMachineId, setSelectedMachineId] = useState(null);
   const [selectedMemberId, setSelectedMemberId] = useState(null);
   const [showCamera, setShowCamera] = useState(false);
-  const [cameraTarget, setCameraTarget] = useState(null); // "incident" | "sop_step:{id}"
+  const [cameraTarget, setCameraTarget] = useState(null); // "incident" | "sop:{id}"
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [incidents, setIncidents] = useState([]);
   const [selectedIncident, setSelectedIncident] = useState(null);
   const [newIncident, setNewIncident] = useState({ type: "", severity: "", description: "", location: "", photos: [] });
@@ -490,7 +541,7 @@ export default function ShopGuard() {
     async function loadIncidents() {
       const { data, error } = await supabase
         .from("incidents")
-        .select("id, type, location, description, reported_by, status, created_at")
+        .select("id, type, location, description, reported_by, status, created_at, photo_urls")
         .eq("company_id", company.id)
         .order("created_at", { ascending: false });
       if (error) {
@@ -499,8 +550,21 @@ export default function ShopGuard() {
         setIncidents(data.map(incidentRowToIncident));
       }
     }
+    async function loadMachines() {
+      const { data, error } = await supabase
+        .from("machines")
+        .select("id, name, requires_loto, ppe, active, sop_steps")
+        .eq("company_id", company.id)
+        .eq("active", true);
+      if (error) {
+        console.error("Failed to load machines:", error);
+      } else if (data?.length) {
+        setMachines(data.map(machineRowToMachine));
+      }
+    }
     loadEmployees();
     loadIncidents();
+    loadMachines();
   }, [company]);
 
   const selectedMachine = () => machines.find(m => m.id === selectedMachineId);
@@ -606,7 +670,15 @@ export default function ShopGuard() {
     setSopSteps(prev => [...prev, ns]);
     setEditingStepId(ns.id);
   }
-  function updateSopStep(id, field, val) { setSopSteps(prev => prev.map(st => st.id === id ? { ...st, [field]: val } : st)); }
+  function updateSopStep(id, field, val) {
+    const updated = sopSteps.map(st => st.id === id ? { ...st, [field]: val } : st);
+    setSopSteps(updated);
+    if (field === "photo") {
+      saveMachineSopSteps(updated).then((ok) => {
+        if (ok) setMachines(prev => prev.map(m => m.id === selectedMachineId ? { ...m, sopSteps: updated } : m));
+      });
+    }
+  }
   function deleteSopStep(id) { setSopSteps(prev => prev.filter(st => st.id !== id)); if (editingStepId === id) setEditingStepId(null); }
   function moveSopStep(id, dir) {
     setSopSteps(prev => {
@@ -619,20 +691,50 @@ export default function ShopGuard() {
     });
   }
 
+  async function saveMachineSopSteps(steps) {
+    if (!selectedMachineId) return true;
+    const { error } = await supabase
+      .from("machines")
+      .update({ sop_steps: steps })
+      .eq("id", selectedMachineId);
+    if (error) {
+      console.error("Failed to save SOP steps:", error);
+      return false;
+    }
+    return true;
+  }
+
   function submitSopForReview() {
     setMachines(prev => prev.map(m => m.id === selectedMachineId ? { ...m, pendingSop: { steps: sopSteps.filter(st => st.title), submittedBy: currentUser.name, submittedTs: Date.now(), note: sopNote } } : m));
     setSopSubmittedForReview(true);
     setTimeout(() => { setSopSubmittedForReview(false); setSopSteps([]); setSopNote(""); setEditingStepId(null); setScreen(SCREENS.MACHINE_DETAIL); }, 2200);
   }
 
-  function publishSop() {
-    setMachines(prev => prev.map(m => m.id === selectedMachineId ? { ...m, sop: true, sopSteps: sopSteps.filter(st => st.title), pendingSop: null } : m));
+  async function publishSop() {
+    const steps = sopSteps.filter(st => st.title);
+    const saved = await saveMachineSopSteps(steps);
+    if (!saved) {
+      alert("Failed to save SOP. Please try again.");
+      return;
+    }
+    setMachines(prev => prev.map(m => m.id === selectedMachineId ? { ...m, sop: true, sopSteps: steps, pendingSop: null } : m));
     setSopPublished(true);
     setTimeout(() => { setSopPublished(false); setSopSteps([]); setSopNote(""); setEditingStepId(null); setScreen(SCREENS.MACHINE_DETAIL); }, 2000);
   }
 
-  function approvePendingSop(machineId) {
-    setMachines(prev => prev.map(m => m.id === machineId ? { ...m, sop: true, sopSteps: m.pendingSop.steps, pendingSop: null } : m));
+  async function approvePendingSop(machineId) {
+    const machine = machines.find(m => m.id === machineId);
+    const steps = machine?.pendingSop?.steps || [];
+    const { error } = await supabase
+      .from("machines")
+      .update({ sop_steps: steps })
+      .eq("id", machineId);
+    if (error) {
+      console.error("Failed to save approved SOP:", error);
+      alert("Failed to approve SOP. Please try again.");
+      return;
+    }
+    setMachines(prev => prev.map(m => m.id === machineId ? { ...m, sop: true, sopSteps: steps, pendingSop: null } : m));
     setReviewAction("approved");
   }
 
@@ -657,8 +759,9 @@ export default function ShopGuard() {
         description: newIncident.description,
         reported_by: currentUser?.name,
         status: "Open",
+        photo_urls: newIncident.photos,
       })
-      .select("id, type, location, description, reported_by, status, created_at")
+      .select("id, type, location, description, reported_by, status, created_at, photo_urls")
       .single();
 
     if (error) {
@@ -670,8 +773,6 @@ export default function ShopGuard() {
     setIncidents(prev => [{
       ...incidentRowToIncident(data),
       severity: newIncident.severity || "Low",
-      photos: newIncident.photos.length,
-      photoData: newIncident.photos,
     }, ...prev]);
     setSubmitted(true);
     setTimeout(() => {
@@ -837,17 +938,34 @@ export default function ShopGuard() {
     setScreen(SCREENS.DASHBOARD);
   }
 
-  function handleCapture(dataUrl) {
-    if (cameraTarget === "incident") {
-      setNewIncident(prev => ({ ...prev, photos: [...prev.photos, dataUrl] }));
-    } else if (cameraTarget?.startsWith("sop:")) {
-      const stepId = parseInt(cameraTarget.split(":")[1]);
-      setSopSteps(prev => prev.map(st => st.id === stepId ? { ...st, photo: dataUrl } : st));
+  async function handleCapture(dataUrl) {
+    const folder = cameraTarget === "incident" ? "incidents" : "sops";
+    setPhotoUploading(true);
+    try {
+      const url = dataUrl === "simulated"
+        ? await uploadPlaceholderPhoto(folder)
+        : await uploadPhotoFromDataUrl(folder, dataUrl);
+
+      if (cameraTarget === "incident") {
+        setNewIncident(prev => ({ ...prev, photos: [...prev.photos, url] }));
+      } else if (cameraTarget?.startsWith("sop:")) {
+        const stepId = parseInt(cameraTarget.split(":")[1]);
+        const updatedSteps = sopSteps.map(st => st.id === stepId ? { ...st, photo: url } : st);
+        setSopSteps(updatedSteps);
+        const saved = await saveMachineSopSteps(updatedSteps);
+        if (!saved) alert("Photo uploaded but failed to save to SOP. Try publishing again.");
+        setMachines(prev => prev.map(m => m.id === selectedMachineId ? { ...m, sopSteps: updatedSteps } : m));
+      }
+    } catch (err) {
+      console.error("Failed to upload photo:", err);
+      alert("Failed to upload photo. Please try again.");
+    } finally {
+      setPhotoUploading(false);
+      setCameraTarget(null);
     }
-    setCameraTarget(null);
   }
 
-  if (showCamera) return <CameraModal onClose={() => setShowCamera(false)} onCapture={handleCapture} />;
+  if (showCamera) return <CameraModal onClose={() => setShowCamera(false)} onCapture={handleCapture} uploading={photoUploading} />;
 
   if (bootstrapping) {
     return (
@@ -1371,9 +1489,9 @@ export default function ShopGuard() {
                   <label style={s.formLabel}>Photo</label>
                   {step.photo ? (
                     <div style={{ marginBottom: 12 }}>
-                      {step.photo === "simulated"
-                        ? <div style={{ background: "#1a2a1a", border: "2px solid #2ecc71", padding: "16px", fontSize: 13, color: "#2ecc71", textAlign: "center", marginBottom: 8 }}>📷 PHOTO ATTACHED</div>
-                        : <img src={step.photo} alt="" style={{ width: "100%", border: "2px solid #2ecc71", marginBottom: 8 }} />}
+                      {isPhotoUrl(step.photo)
+                        ? <img src={step.photo} alt="" style={{ width: "100%", border: "2px solid #2ecc71", marginBottom: 8 }} />
+                        : <div style={{ background: "#1a2a1a", border: "2px solid #2ecc71", padding: "16px", fontSize: 13, color: "#2ecc71", textAlign: "center", marginBottom: 8 }}>📷 PHOTO ATTACHED</div>}
                       <div style={{ display: "flex", gap: 8 }}>
                         <button style={{ ...s.backBtn, flex: 1, padding: 10, fontSize: 12 }} onClick={() => updateSopStep(step.id, "photo", null)}>REMOVE</button>
                         <button style={{ ...s.primaryBtn, flex: 2, padding: 10, fontSize: 13 }} onClick={() => openCamera(`sop:${step.id}`)}>📷 REPLACE</button>
@@ -1429,8 +1547,13 @@ export default function ShopGuard() {
                 <div style={{ fontSize: 16, fontWeight: 800 }}>{step.title}</div>
               </div>
               <div style={{ padding: "12px 14px" }}>
-                {step.description && <div style={{ fontSize: 14, color: "#ccc", lineHeight: 1.6, marginBottom: step.warning ? 10 : 0 }}>{step.description}</div>}
-                {step.warning && <div style={{ background: "#2a1500", border: "1px solid #f39c12", padding: "8px 12px", fontSize: 13, color: "#f39c12", fontWeight: 700 }}>⚠ {step.warning}</div>}
+                {step.description && <div style={{ fontSize: 14, color: "#ccc", lineHeight: 1.6, marginBottom: step.warning || step.photo ? 10 : 0 }}>{step.description}</div>}
+                {step.warning && <div style={{ background: "#2a1500", border: "1px solid #f39c12", padding: "8px 12px", fontSize: 13, color: "#f39c12", fontWeight: 700, marginBottom: step.photo ? 10 : 0 }}>⚠ {step.warning}</div>}
+                {step.photo && (
+                  isPhotoUrl(step.photo)
+                    ? <img src={step.photo} alt="" style={{ width: "100%", border: "2px solid #2ecc71" }} />
+                    : <div style={{ background: "#1a2a1a", border: "1px solid #2ecc71", padding: 12, textAlign: "center", fontSize: 12, color: "#2ecc71" }}>📷 Photo attached</div>
+                )}
               </div>
             </div>
           ))}
@@ -1875,14 +1998,12 @@ export default function ShopGuard() {
           <input style={s.input} placeholder="e.g. Press Brake #33" value={newIncident.location} onChange={e => setNewIncident(p => ({ ...p, location: e.target.value }))} />
           <label style={s.formLabel}>What happened?</label>
           <textarea style={s.textarea} placeholder="Describe the incident clearly..." value={newIncident.description} onChange={e => setNewIncident(p => ({ ...p, description: e.target.value }))} />
-          <label style={s.formLabel}>Photos ({newIncident.photos.length} attached)</label>
+          <label style={s.formLabel}>Photos ({newIncident.photos.length} attached){photoUploading ? " — uploading..." : ""}</label>
           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
             {newIncident.photos.map((p, i) => (
-              p === "simulated"
-                ? <div key={i} style={{ width: 72, height: 72, background: "#1a2a1a", border: "2px solid #2ecc71", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#2ecc71", letterSpacing: 1, textAlign: "center", flexShrink: 0 }}>📷<br />PHOTO {i + 1}</div>
-                : <img key={i} src={p} alt="" style={{ width: 72, height: 72, objectFit: "cover", border: "2px solid #2ecc71" }} />
+              <PhotoThumb key={i} src={p} />
             ))}
-            <button onClick={() => openCamera("incident")} style={{ width: 72, height: 72, background: "#161a23", border: "2px dashed #ff6b00", color: "#ff6b00", fontSize: 24, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, flexShrink: 0, fontFamily: "inherit" }}>
+            <button onClick={() => openCamera("incident")} disabled={photoUploading} style={{ width: 72, height: 72, background: "#161a23", border: "2px dashed #ff6b00", color: "#ff6b00", fontSize: 24, cursor: photoUploading ? "not-allowed" : "pointer", opacity: photoUploading ? 0.5 : 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, flexShrink: 0, fontFamily: "inherit" }}>
               <span>📷</span><span style={{ fontSize: 9, letterSpacing: 1 }}>ADD</span>
             </button>
           </div>
@@ -1904,6 +2025,16 @@ export default function ShopGuard() {
           <div style={s.detailRow}><span style={s.detailLabel}>Date</span><span>{inc.date}</span></div>
           <div style={s.detailRow}><span style={s.detailLabel}>Reported By</span><span style={{ fontWeight: 700 }}>{inc.reportedBy}</span></div>
           <div style={{ padding: "12px 0", borderBottom: "1px solid #1f2330" }}><div style={s.detailLabel}>Description</div><div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.6, color: "#ccc" }}>{inc.description}</div></div>
+          {inc.photoData?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={s.detailLabel}>Photos ({inc.photoData.length})</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                {inc.photoData.map((p, i) => (
+                  <PhotoThumb key={i} src={p} style={{ width: 100, height: 100 }} />
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{ marginTop: 20 }}>
             <button style={{ ...s.primaryBtn, background: inc.status === "Open" ? "#2ecc71" : "#444", color: "#000" }} onClick={() => updateIncidentStatus(inc.id, inc.status === "Open" ? "Closed" : "Open")}>{inc.status === "Open" ? "✓ MARK CLOSED" : "↩ REOPEN"}</button>
           </div>
