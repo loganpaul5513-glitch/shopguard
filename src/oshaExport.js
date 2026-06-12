@@ -346,10 +346,6 @@ export async function generateOshaPdf({ companyName, records }) {
 }
 
 export async function sendOshaEmail({ to, companyName, pdfDoc, records }) {
-  const apiKey = import.meta.env.VITE_RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("Resend API key is not configured. Set VITE_RESEND_API_KEY in your environment.");
-  }
   if (!to?.trim()) {
     throw new Error("No safety contact email configured. Add one in Supervisor Settings.");
   }
@@ -357,16 +353,15 @@ export async function sendOshaEmail({ to, companyName, pdfDoc, records }) {
   const pdfBase64 = pdfDoc.output("datauristring").split(",")[1];
   const safeName = (companyName || "company").replace(/[^\w-]+/g, "-").toLowerCase();
   const fromEmail = import.meta.env.VITE_RESEND_FROM_EMAIL || "ShopGuard <onboarding@resend.dev>";
-  const resendUrl = "/api/resend/emails";
 
-  const response = await fetch(resendUrl, {
+  const response = await fetch("/api/sendEmail", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      to: to.trim(),
       from: fromEmail,
-      to: [to.trim()],
       subject: `OSHA Records Export — ${companyName}`,
       html: buildEmailHtml({ companyName, records }),
       attachments: [
