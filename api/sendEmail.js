@@ -4,7 +4,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ message: "Method not allowed" });
   }
 
-  const apiKey = process.env.VITE_RESEND_API_KEY;
+  const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ message: "Resend API key is not configured." });
   }

@@ -27,7 +27,7 @@ async function handleSendEmail(req, res, env) {
     return
   }
 
-  const apiKey = env.VITE_RESEND_API_KEY
+  const apiKey = env.RESEND_API_KEY
   if (!apiKey) {
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
