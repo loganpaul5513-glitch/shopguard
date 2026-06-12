@@ -1,7 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { supabase } from './supabase'
 
+const STORAGE_KEY_COMPANY_CODE = "shopguard_company_code";
+
 const SCREENS = {
+  COMPANY_CODE: "company_code",
+  PIN_SETUP: "pin_setup",
+  PIN_VERIFY: "pin_verify",
   LOGIN: "login",
   DASHBOARD: "dashboard",
   MACHINES: "machines",
@@ -68,7 +73,23 @@ function inspectionStatus(ts) {
   return "critical";
 }
 
-const COMPANY_ID = "demo-company";
+async function hashPin(pin) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function validateCompanyCode(code) {
+  const trimmed = code.trim();
+  if (!trimmed) return null;
+  const { data, error } = await supabase
+    .from("companies")
+    .select("id, name, company_code")
+    .ilike("company_code", trimmed)
+    .eq("active", true)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
 
 function nameToAvatar(name) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -83,6 +104,7 @@ function employeeRowToMember(row) {
     avatar: nameToAvatar(row.name),
     role: (row.role || ROLES.WORKER).toLowerCase(),
     active: row.active !== false,
+    hasPin: !!row.pin,
     trained: [],
     missing: [],
     expiring: null,
@@ -346,8 +368,18 @@ function CorrectiveActionForm({ incidentId, team, onSave, s }) {
 
 export default function ShopGuard() {
   const s = getS();
+  const [bootstrapping, setBootstrapping] = useState(true);
+  const [company, setCompany] = useState(null);
+  const [companyCodeInput, setCompanyCodeInput] = useState("");
+  const [companyCodeError, setCompanyCodeError] = useState("");
+  const [companyCodeLoading, setCompanyCodeLoading] = useState(false);
+  const [pendingLoginUser, setPendingLoginUser] = useState(null);
+  const [pinInput, setPinInput] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinLoading, setPinLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
-  const [screen, setScreen] = useState(SCREENS.LOGIN);
+  const [screen, setScreen] = useState(SCREENS.COMPANY_CODE);
   const [machines, setMachines] = useState(initialMachines);
   const [team, setTeam] = useState([]);
   const [teamLoading, setTeamLoading] = useState(true);
@@ -419,11 +451,35 @@ export default function ShopGuard() {
   const [trainingLogged, setTrainingLogged] = useState(false);
 
   useEffect(() => {
+    async function bootstrap() {
+      const saved = localStorage.getItem(STORAGE_KEY_COMPANY_CODE);
+      if (!saved) {
+        setBootstrapping(false);
+        setScreen(SCREENS.COMPANY_CODE);
+        return;
+      }
+      const validated = await validateCompanyCode(saved);
+      if (validated) {
+        setCompany(validated);
+        setScreen(SCREENS.LOGIN);
+      } else {
+        localStorage.removeItem(STORAGE_KEY_COMPANY_CODE);
+        setScreen(SCREENS.COMPANY_CODE);
+      }
+      setBootstrapping(false);
+    }
+    bootstrap();
+  }, []);
+
+  useEffect(() => {
+    if (!company) return;
     async function loadEmployees() {
+      setTeamLoading(true);
       const { data, error } = await supabase
         .from("employees")
-        .select("id, name, role, active")
-        .ilike("company_id", COMPANY_ID);
+        .select("id, name, role, active, pin")
+        .eq("company_code", company.company_code)
+        .eq("active", true);
       if (error) {
         console.error("Failed to load employees:", error);
       } else if (data) {
@@ -435,7 +491,7 @@ export default function ShopGuard() {
       const { data, error } = await supabase
         .from("incidents")
         .select("id, type, location, description, reported_by, status, created_at")
-        .ilike("company_id", COMPANY_ID)
+        .eq("company_id", company.id)
         .order("created_at", { ascending: false });
       if (error) {
         console.error("Failed to load incidents:", error);
@@ -445,7 +501,7 @@ export default function ShopGuard() {
     }
     loadEmployees();
     loadIncidents();
-  }, []);
+  }, [company]);
 
   const selectedMachine = () => machines.find(m => m.id === selectedMachineId);
   const selectedMember = () => team.find(m => m.id === selectedMemberId);
@@ -489,7 +545,7 @@ export default function ShopGuard() {
     const { error } = await supabase
       .from("inspections")
       .insert({
-        company_id: COMPANY_ID,
+        company_id: company.id,
         machine_id: selectedMachineId,
         employee_id: currentUser.id,
         employee_name: currentUser.name,
@@ -512,7 +568,7 @@ export default function ShopGuard() {
     const { error } = await supabase
       .from("training_records")
       .insert({
-        company_id: COMPANY_ID,
+        company_id: company.id,
         employee_id: member.id,
         employee_name: member.name,
         training_type: logTrainingType,
@@ -595,7 +651,7 @@ export default function ShopGuard() {
     const { data, error } = await supabase
       .from("incidents")
       .insert({
-        company_id: COMPANY_ID,
+        company_id: company.id,
         type: newIncident.type || "Near Miss",
         location: newIncident.location || "General",
         description: newIncident.description,
@@ -644,12 +700,13 @@ export default function ShopGuard() {
     const { data, error } = await supabase
       .from("employees")
       .insert({
-        company_id: COMPANY_ID,
+        company_id: company.id,
+        company_code: company.company_code,
         name: newEmployee.name.trim(),
         role: newEmployee.role,
         active: true,
       })
-      .select("id, name, role, active")
+      .select("id, name, role, active, pin")
       .single();
 
     if (error) {
@@ -688,6 +745,98 @@ export default function ShopGuard() {
   function severityColor(sev) { return sev === "Critical" ? "red" : sev === "High" ? "yellow" : sev === "Medium" ? "blue" : "green"; }
 
   function openCamera(target) { setCameraTarget(target); setShowCamera(true); }
+
+  function digitsOnly(val) {
+    return val.replace(/\D/g, "").slice(0, 6);
+  }
+
+  async function handleCompanyCodeSubmit() {
+    setCompanyCodeError("");
+    if (!companyCodeInput.trim()) {
+      setCompanyCodeError("Please enter your company code.");
+      return;
+    }
+    setCompanyCodeLoading(true);
+    const validated = await validateCompanyCode(companyCodeInput);
+    setCompanyCodeLoading(false);
+    if (!validated) {
+      setCompanyCodeError("Invalid company code. Check with your supervisor.");
+      return;
+    }
+    localStorage.setItem(STORAGE_KEY_COMPANY_CODE, validated.company_code);
+    setCompany(validated);
+    setCompanyCodeInput("");
+    setScreen(SCREENS.LOGIN);
+  }
+
+  function selectEmployeeForLogin(user) {
+    setPendingLoginUser(user);
+    setPinInput("");
+    setPinConfirm("");
+    setPinError("");
+    setScreen(user.hasPin ? SCREENS.PIN_VERIFY : SCREENS.PIN_SETUP);
+  }
+
+  async function handlePinSetup() {
+    setPinError("");
+    if (pinInput.length < 4) {
+      setPinError("PIN must be at least 4 digits.");
+      return;
+    }
+    if (pinInput !== pinConfirm) {
+      setPinError("PINs do not match. Try again.");
+      return;
+    }
+    setPinLoading(true);
+    const hashed = await hashPin(pinInput);
+    const { error } = await supabase
+      .from("employees")
+      .update({ pin: hashed })
+      .eq("id", pendingLoginUser.id);
+    setPinLoading(false);
+    if (error) {
+      console.error("Failed to save PIN:", error);
+      setPinError("Failed to save PIN. Please try again.");
+      return;
+    }
+    const user = { ...pendingLoginUser, hasPin: true };
+    setTeam(prev => prev.map(m => m.id === user.id ? user : m));
+    setCurrentUser(user);
+    setPendingLoginUser(null);
+    setPinInput("");
+    setPinConfirm("");
+    setScreen(SCREENS.DASHBOARD);
+  }
+
+  async function handlePinVerify() {
+    setPinError("");
+    if (!pinInput) {
+      setPinError("Enter your PIN.");
+      return;
+    }
+    setPinLoading(true);
+    const { data, error } = await supabase
+      .from("employees")
+      .select("pin")
+      .eq("id", pendingLoginUser.id)
+      .single();
+    setPinLoading(false);
+    if (error || !data?.pin) {
+      setPinError("Could not verify PIN. Please try again.");
+      return;
+    }
+    const hashed = await hashPin(pinInput);
+    if (hashed !== data.pin) {
+      setPinError("Incorrect PIN.");
+      setPinInput("");
+      return;
+    }
+    setCurrentUser(pendingLoginUser);
+    setPendingLoginUser(null);
+    setPinInput("");
+    setScreen(SCREENS.DASHBOARD);
+  }
+
   function handleCapture(dataUrl) {
     if (cameraTarget === "incident") {
       setNewIncident(prev => ({ ...prev, photos: [...prev.photos, dataUrl] }));
@@ -700,6 +849,101 @@ export default function ShopGuard() {
 
   if (showCamera) return <CameraModal onClose={() => setShowCamera(false)} onCapture={handleCapture} />;
 
+  if (bootstrapping) {
+    return (
+      <div style={s.app}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+          <div style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
+          <div style={{ color: "#888", letterSpacing: 2, marginTop: 16 }}>LOADING...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── COMPANY CODE ──
+  if (screen === SCREENS.COMPANY_CODE) {
+    return (
+      <div style={s.app}>
+        <div style={{ padding: 24, paddingTop: 48 }}>
+          <div style={{ marginBottom: 32, textAlign: "center" }}>
+            <div style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
+            <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>SHOP SAFETY PLATFORM</div>
+          </div>
+          <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Enter company code</div>
+          <div style={{ fontSize: 13, color: "#888", marginBottom: 20, lineHeight: 1.5 }}>Your supervisor will provide a code to link this device to your shop.</div>
+          <input
+            style={s.input}
+            placeholder="e.g. ACME-2024"
+            value={companyCodeInput}
+            onChange={e => { setCompanyCodeInput(e.target.value); setCompanyCodeError(""); }}
+            onKeyDown={e => e.key === "Enter" && handleCompanyCodeSubmit()}
+            autoFocus
+          />
+          {companyCodeError && <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 12 }}>{companyCodeError}</div>}
+          <button
+            style={{ ...s.primaryBtn, opacity: companyCodeLoading ? 0.6 : 1 }}
+            disabled={companyCodeLoading}
+            onClick={handleCompanyCodeSubmit}
+          >
+            {companyCodeLoading ? "VERIFYING..." : "CONTINUE"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PIN SETUP ──
+  if (screen === SCREENS.PIN_SETUP && pendingLoginUser) {
+    return (
+      <div style={s.app}>
+        <div style={{ padding: 24, paddingTop: 48 }}>
+          <button style={{ ...s.backBtn, marginBottom: 24 }} onClick={() => { setPendingLoginUser(null); setPinInput(""); setPinConfirm(""); setPinError(""); setScreen(SCREENS.LOGIN); }}>← BACK</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
+            <div style={s.avatar(pendingLoginUser.role)}>{pendingLoginUser.avatar}</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 18, color: "#e8e8e0" }}>{pendingLoginUser.name}</div>
+              <span style={s.roleTag(pendingLoginUser.role)}>{pendingLoginUser.role}</span>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Set up your PIN</div>
+          <div style={{ fontSize: 13, color: "#888", marginBottom: 20, lineHeight: 1.5 }}>Create a 4–6 digit PIN. You will use this every time you sign in.</div>
+          <label style={s.formLabel}>New PIN</label>
+          <input style={s.input} type="password" inputMode="numeric" pattern="[0-9]*" placeholder="••••" value={pinInput} onChange={e => { setPinInput(digitsOnly(e.target.value)); setPinError(""); }} autoFocus />
+          <label style={s.formLabel}>Confirm PIN</label>
+          <input style={s.input} type="password" inputMode="numeric" pattern="[0-9]*" placeholder="••••" value={pinConfirm} onChange={e => { setPinConfirm(digitsOnly(e.target.value)); setPinError(""); }} onKeyDown={e => e.key === "Enter" && handlePinSetup()} />
+          {pinError && <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 12 }}>{pinError}</div>}
+          <button style={{ ...s.primaryBtn, opacity: pinLoading ? 0.6 : 1 }} disabled={pinLoading} onClick={handlePinSetup}>
+            {pinLoading ? "SAVING..." : "SAVE PIN & SIGN IN"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PIN VERIFY ──
+  if (screen === SCREENS.PIN_VERIFY && pendingLoginUser) {
+    return (
+      <div style={s.app}>
+        <div style={{ padding: 24, paddingTop: 48 }}>
+          <button style={{ ...s.backBtn, marginBottom: 24 }} onClick={() => { setPendingLoginUser(null); setPinInput(""); setPinError(""); setScreen(SCREENS.LOGIN); }}>← BACK</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
+            <div style={s.avatar(pendingLoginUser.role)}>{pendingLoginUser.avatar}</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 18, color: "#e8e8e0" }}>{pendingLoginUser.name}</div>
+              <span style={s.roleTag(pendingLoginUser.role)}>{pendingLoginUser.role}</span>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Enter your PIN</div>
+          <input style={s.input} type="password" inputMode="numeric" pattern="[0-9]*" placeholder="••••" value={pinInput} onChange={e => { setPinInput(digitsOnly(e.target.value)); setPinError(""); }} onKeyDown={e => e.key === "Enter" && handlePinVerify()} autoFocus />
+          {pinError && <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 12 }}>{pinError}</div>}
+          <button style={{ ...s.primaryBtn, opacity: pinLoading ? 0.6 : 1 }} disabled={pinLoading} onClick={handlePinVerify}>
+            {pinLoading ? "VERIFYING..." : "SIGN IN"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── LOGIN ──
   if (screen === SCREENS.LOGIN) {
     return (
@@ -708,7 +952,7 @@ export default function ShopGuard() {
           <div style={{ marginBottom: 32, textAlign: "center" }}>
             <div style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
             <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>SHOP SAFETY PLATFORM</div>
-            <div style={{ fontSize: 12, color: "#555", marginTop: 16 }}>On a real device this would be fingerprint login.</div>
+            {company?.name && <div style={{ fontSize: 13, color: "#888", marginTop: 12 }}>{company.name}</div>}
           </div>
           <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Select your account</div>
           {teamLoading && <div style={{ color: "#888", letterSpacing: 2, marginBottom: 16 }}>LOADING TEAM...</div>}
@@ -716,7 +960,7 @@ export default function ShopGuard() {
             <div style={{ color: "#888", fontSize: 13, marginBottom: 16 }}>No active employees found. A supervisor can add team members from Team Management.</div>
           )}
           {team.filter(user => user.active).map(user => (
-            <button key={user.id} onClick={() => { setCurrentUser(user); setScreen(SCREENS.DASHBOARD); }}
+            <button key={user.id} onClick={() => selectEmployeeForLogin(user)}
               style={{ display: "flex", alignItems: "center", gap: 14, background: "#161a23", border: "1px solid #2a2e3a", borderLeft: `4px solid ${ROLE_COLORS[user.role]}`, padding: "14px 16px", marginBottom: 10, cursor: "pointer", width: "100%", textAlign: "left", fontFamily: "inherit" }}>
               <div style={s.avatar(user.role)}>{user.avatar}</div>
               <div>
@@ -1491,7 +1735,7 @@ export default function ShopGuard() {
     const { data, error } = await supabase
       .from("machines")
       .insert({
-        company_id: COMPANY_ID,
+        company_id: company.id,
         name: newMachine.name.trim(),
         requires_loto: newMachine.lototo,
         ppe: ppeList,
@@ -2168,7 +2412,7 @@ export default function ShopGuard() {
             <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e0" }}>{currentUser?.name.split(" ")[0]}</div>
             <span style={{ ...s.roleTag(currentUser?.role), fontSize: 9, padding: "2px 7px", letterSpacing: 1 }}>{currentUser?.role}</span>
           </div>
-          <button onClick={() => { setCurrentUser(null); setScreen(SCREENS.LOGIN); }} style={{ ...s.backBtn, fontSize: 11, padding: "4px 8px" }}>SWITCH</button>
+          <button onClick={() => { setCurrentUser(null); setPendingLoginUser(null); setPinInput(""); setScreen(SCREENS.LOGIN); }} style={{ ...s.backBtn, fontSize: 11, padding: "4px 8px" }}>SWITCH</button>
         </div>
       </div>
       <div style={s.content}>
