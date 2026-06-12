@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { supabase } from './supabase'
 import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './photoStorage'
+import { exportAndEmailOshaRecords } from './oshaExport'
 
 const STORAGE_KEY_COMPANY_CODE = "shopguard_company_code";
 
@@ -27,6 +28,7 @@ const SCREENS = {
   INCIDENT_NEW: "incident_new",
   INCIDENT_DETAIL: "incident_detail",
   OSHA_PANIC: "osha_panic",
+  SUPERVISOR_SETTINGS: "supervisor_settings",
   INSPECTION_LOG: "inspection_log",
   TEAM: "team",
   TEAM_MEMBER: "team_member",
@@ -84,7 +86,7 @@ async function validateCompanyCode(code) {
   if (!trimmed) return null;
   const { data, error } = await supabase
     .from("companies")
-    .select("id, name, company_code")
+    .select("id, name, company_code, safety_email")
     .ilike("company_code", trimmed)
     .eq("active", true)
     .maybeSingle();
@@ -469,6 +471,12 @@ export default function ShopGuard() {
   const [submitted, setSubmitted] = useState(false);
   const [panicExported, setPanicExported] = useState(false);
   const [showPanicConfirm, setShowPanicConfirm] = useState(false);
+  const [panicLoading, setPanicLoading] = useState(false);
+  const [panicError, setPanicError] = useState("");
+  const [safetyEmailInput, setSafetyEmailInput] = useState("");
+  const [safetyEmailSaving, setSafetyEmailSaving] = useState(false);
+  const [safetyEmailSaved, setSafetyEmailSaved] = useState(false);
+  const [safetyEmailError, setSafetyEmailError] = useState("");
   const [sopSteps, setSopSteps] = useState([]);
   const [sopPublished, setSopPublished] = useState(false);
   const [sopSubmittedForReview, setSopSubmittedForReview] = useState(false);
@@ -686,6 +694,55 @@ export default function ShopGuard() {
       setSelectedTrainingMember(null);
       setScreen(SCREENS.TRAINING);
     }, 1800);
+  }
+
+  async function saveSafetyEmail() {
+    const email = safetyEmailInput.trim();
+    if (!email) {
+      setSafetyEmailError("Please enter a safety contact email address.");
+      return;
+    }
+    setSafetyEmailSaving(true);
+    setSafetyEmailError("");
+    setSafetyEmailSaved(false);
+    const { error } = await supabase
+      .from("companies")
+      .update({ safety_email: email })
+      .eq("id", company.id);
+    setSafetyEmailSaving(false);
+    if (error) {
+      console.error("Failed to save safety email:", error);
+      setSafetyEmailError("Failed to save email. Please try again.");
+      return;
+    }
+    setCompany(prev => ({ ...prev, safety_email: email }));
+    setSafetyEmailSaved(true);
+    setTimeout(() => setSafetyEmailSaved(false), 3000);
+  }
+
+  async function runOshaPanicExport() {
+    if (!company?.safety_email?.trim()) {
+      setPanicError("No safety contact email configured. Add one in Supervisor Settings first.");
+      setShowPanicConfirm(false);
+      return;
+    }
+    setPanicLoading(true);
+    setPanicError("");
+    try {
+      await exportAndEmailOshaRecords({
+        companyId: company.id,
+        companyName: company.name,
+        safetyEmail: company.safety_email,
+      });
+      setPanicExported(true);
+      setShowPanicConfirm(false);
+    } catch (err) {
+      console.error("OSHA panic export failed:", err);
+      setPanicError(err.message || "Failed to export and send records. Please try again.");
+      setShowPanicConfirm(false);
+    } finally {
+      setPanicLoading(false);
+    }
   }
 
   function addSopStep() {
@@ -2101,34 +2158,77 @@ export default function ShopGuard() {
     );
   }
 
-  // ── OSHA PANIC ──
-  if (screen === SCREENS.OSHA_PANIC) {
+  // ── SUPERVISOR SETTINGS ──
+  if (screen === SCREENS.SUPERVISOR_SETTINGS) {
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => { setScreen(SCREENS.DASHBOARD); setPanicExported(false); setShowPanicConfirm(false); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.header}><button style={s.backBtn} onClick={() => { setScreen(SCREENS.DASHBOARD); setSafetyEmailError(""); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.content}>
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1, marginBottom: 4 }}>SUPERVISOR SETTINGS</div>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 20, letterSpacing: 1 }}>COMPANY SAFETY CONFIGURATION</div>
+
+          <div style={s.sectionTitle}>Safety Contact Email</div>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
+            OSHA Panic Mode sends a PDF of all safety records to this address when an inspector arrives.
+          </div>
+          <label style={s.formLabel}>Email Address *</label>
+          <input
+            style={s.input}
+            type="email"
+            placeholder="safety@yourcompany.com"
+            value={safetyEmailInput}
+            onChange={e => { setSafetyEmailInput(e.target.value); setSafetyEmailError(""); setSafetyEmailSaved(false); }}
+          />
+          {safetyEmailError && <div style={{ ...s.alertBanner("red"), marginBottom: 12 }}>{safetyEmailError}</div>}
+          {safetyEmailSaved && <div style={{ ...s.alertBanner("green"), marginBottom: 12, background: "#0f2a1a", border: "1px solid #2ecc71", color: "#2ecc71" }}>✓ Safety contact email saved</div>}
+          <button
+            style={{ ...s.primaryBtn, opacity: safetyEmailSaving ? 0.6 : 1 }}
+            disabled={safetyEmailSaving}
+            onClick={saveSafetyEmail}
+          >
+            {safetyEmailSaving ? "SAVING..." : "SAVE EMAIL"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── OSHA PANIC ──
+  if (screen === SCREENS.OSHA_PANIC) {
+    const exportItems = ["Machines", "Inspections", `Incidents (${incidents.length} total)`, "Training Records"];
+    return (
+      <div style={s.app}>
+        <div style={s.header}><button style={s.backBtn} onClick={() => { setScreen(SCREENS.DASHBOARD); setPanicExported(false); setShowPanicConfirm(false); setPanicError(""); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
         <div style={s.content}>
           <div style={{ background: "#1a0a0a", border: "2px solid #c0392b", padding: 20, marginBottom: 16 }}>
             <div style={{ fontSize: 22, fontWeight: 800, color: "#e74c3c", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>🚨 OSHA PANIC MODE</div>
-            <div style={{ fontSize: 13, color: "#aaa", marginBottom: 16 }}>Inspector on site? Export everything in one tap.</div>
-            {["Training Logs", "Machine Inspection Logs", "Approved SOPs", "LOTOTO Procedures & Logs", `Incident Reports (${incidents.length} total)`].map((item, i) => (
+            <div style={{ fontSize: 13, color: "#aaa", marginBottom: 8 }}>Inspector on site? Export everything in one tap.</div>
+            {company?.safety_email ? (
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>PDF will be emailed to: <span style={{ color: "#ccc" }}>{company.safety_email}</span></div>
+            ) : (
+              <div style={{ ...s.alertBanner("red"), marginBottom: 16 }}>No safety email configured. Set one in Supervisor Settings before exporting.</div>
+            )}
+            {exportItems.map((item, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #2a1a1a", fontSize: 14 }}>
                 <span style={{ color: panicExported ? "#2ecc71" : "#e74c3c" }}>{panicExported ? "✓" : "○"}</span>
                 <span style={{ color: panicExported ? "#2ecc71" : "#ccc" }}>{item}</span>
               </div>
             ))}
           </div>
+          {panicError && <div style={{ ...s.alertBanner("red"), marginBottom: 16 }}>{panicError}</div>}
           {!panicExported ? (!showPanicConfirm
-            ? <button style={s.dangerBtn} onClick={() => setShowPanicConfirm(true)}>EXPORT ALL RECORDS NOW</button>
+            ? <button style={{ ...s.dangerBtn, opacity: panicLoading ? 0.6 : 1 }} disabled={panicLoading} onClick={() => { setPanicError(""); setShowPanicConfirm(true); }}>{panicLoading ? "EXPORTING..." : "EXPORT ALL RECORDS NOW"}</button>
             : <div style={{ background: "#1a0a0a", border: "2px solid #c0392b", padding: 16 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#e74c3c", marginBottom: 12 }}>Confirm export?</div>
-                <button style={{ ...s.dangerBtn, marginBottom: 10 }} onClick={() => { setPanicExported(true); setShowPanicConfirm(false); }}>YES — EXPORT NOW</button>
-                <button style={{ ...s.backBtn, width: "100%", padding: 12 }} onClick={() => setShowPanicConfirm(false)}>CANCEL</button>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#e74c3c", marginBottom: 8 }}>Confirm export?</div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>All records will be compiled into a PDF and emailed to your safety contact.</div>
+                <button style={{ ...s.dangerBtn, marginBottom: 10, opacity: panicLoading ? 0.6 : 1 }} disabled={panicLoading} onClick={runOshaPanicExport}>{panicLoading ? "SENDING..." : "YES — EXPORT NOW"}</button>
+                <button style={{ ...s.backBtn, width: "100%", padding: 12 }} disabled={panicLoading} onClick={() => setShowPanicConfirm(false)}>CANCEL</button>
               </div>
           ) : (
             <div style={{ background: "#0f2a1a", border: "2px solid #2ecc71", padding: 20, textAlign: "center" }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>✓</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: "#2ecc71", letterSpacing: 2 }}>RECORDS EXPORTED</div>
-              <div style={{ fontSize: 13, color: "#aaa", marginTop: 8 }}>PDF ready · Only approved SOPs included</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#2ecc71", letterSpacing: 2 }}>RECORDS SENT</div>
+              <div style={{ fontSize: 13, color: "#aaa", marginTop: 8 }}>PDF emailed to {company?.safety_email}</div>
             </div>
           )}
         </div>
@@ -2625,6 +2725,7 @@ export default function ShopGuard() {
         <button style={s.bigBtn} onClick={() => setScreen(SCREENS.INCIDENT_NEW)}><span style={s.bigBtnIcon}>🚨</span><div><div style={s.bigBtnLabel}>Report Incident</div><div style={s.bigBtnSub}>File a new incident report</div></div></button>
         {isSupervisor() && <button style={s.bigBtn} onClick={() => setScreen(SCREENS.INCIDENTS)}><span style={s.bigBtnIcon}>📂</span><div><div style={s.bigBtnLabel}>Incident Reports</div><div style={s.bigBtnSub}>{openIncidents()} open · supervisor view</div></div></button>}
         {isSupervisor() && <button style={s.bigBtn} onClick={() => setScreen(SCREENS.TEAM)}><span style={s.bigBtnIcon}>👥</span><div><div style={s.bigBtnLabel}>Team Management</div><div style={s.bigBtnSub}>{team.length} members · assign roles</div></div></button>}
+        {isSupervisor() && <button style={s.bigBtn} onClick={() => { setSafetyEmailInput(company?.safety_email || ""); setSafetyEmailError(""); setSafetyEmailSaved(false); setScreen(SCREENS.SUPERVISOR_SETTINGS); }}><span style={s.bigBtnIcon}>⚙️</span><div><div style={s.bigBtnLabel}>Supervisor Settings</div><div style={s.bigBtnSub}>{company?.safety_email ? "Safety email configured" : "Set safety contact email"}</div></div></button>}
         <button style={s.bigBtn} onClick={() => setScreen(SCREENS.TRAINING)}><span style={s.bigBtnIcon}>🎓</span><div><div style={s.bigBtnLabel}>Training Records</div><div style={s.bigBtnSub}>Certs, expirations, missing training</div></div></button>
         {isSupervisor() && pendingCount() > 0 && <button style={{ ...s.bigBtn, borderLeft: "4px solid #a070ff" }} onClick={() => setScreen(SCREENS.PENDING_SOPS)}><span style={s.bigBtnIcon}>📋</span><div><div style={{ ...s.bigBtnLabel, color: "#a070ff" }}>Review SOPs</div><div style={s.bigBtnSub}>{pendingCount()} draft{pendingCount() > 1 ? "s" : ""} from workers</div></div></button>}
         {isSupervisor() && <button style={{ ...s.bigBtn, borderLeft: "4px solid #e74c3c" }} onClick={() => setScreen(SCREENS.OSHA_PANIC)}><span style={s.bigBtnIcon}>📤</span><div><div style={{ ...s.bigBtnLabel, color: "#e74c3c" }}>OSHA Panic Mode</div><div style={s.bigBtnSub}>Export all records instantly</div></div></button>}
