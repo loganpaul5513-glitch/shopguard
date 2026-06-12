@@ -326,13 +326,36 @@ function CameraModal({ onClose, onCapture, uploading }) {
     start();
     return () => { if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); };
   }, []);
+
+  useEffect(() => {
+    if (captured || loading || error) return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (video && stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+  }, [captured, loading, error]);
+
+  async function retake() {
+    setCaptured(null);
+    const stream = streamRef.current;
+    if (!stream || stream.getTracks().every(t => t.readyState === "ended")) {
+      setLoading(true);
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        streamRef.current = newStream;
+        setLoading(false);
+      } catch { setError(true); setLoading(false); }
+    }
+  }
+
   function capture() {
     if (videoRef.current && canvasRef.current) {
       const ctx = canvasRef.current.getContext("2d");
       canvasRef.current.width = videoRef.current.videoWidth;
       canvasRef.current.height = videoRef.current.videoHeight;
       ctx.drawImage(videoRef.current, 0, 0);
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
       setCaptured(canvasRef.current.toDataURL("image/jpeg"));
     }
   }
@@ -358,7 +381,7 @@ function CameraModal({ onClose, onCapture, uploading }) {
         {captured && <>
           <img src={captured} alt="captured" style={{ width: "100%", maxWidth: 400, marginBottom: 20, border: "2px solid #2ecc71" }} />
           <div style={{ display: "flex", gap: 10, width: "100%", maxWidth: 400 }}>
-            <button style={{ ...s.backBtn, flex: 1, padding: 14 }} onClick={() => setCaptured(null)}>RETAKE</button>
+            <button style={{ ...s.backBtn, flex: 1, padding: 14 }} onClick={retake}>RETAKE</button>
             <button style={{ ...s.primaryBtn, flex: 2, opacity: uploading ? 0.6 : 1 }} disabled={uploading} onClick={() => { onCapture(captured); onClose(); }}>✓ USE PHOTO</button>
           </div>
         </>}
