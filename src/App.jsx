@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { supabase } from './supabase'
+import { applyCompanyIdFilter, fetchCompanyRecordIds } from './companyIds'
 import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './photoStorage'
 import { exportAndEmailOshaRecords } from './oshaExport'
 
@@ -471,7 +472,7 @@ export default function ShopGuard() {
   const [pinLoading, setPinLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [screen, setScreen] = useState(SCREENS.COMPANY_CODE);
-  const [machines, setMachines] = useState(initialMachines);
+  const [machines, setMachines] = useState([]);
   const [team, setTeam] = useState([]);
   const [teamLoading, setTeamLoading] = useState(true);
   const [newEmployee, setNewEmployee] = useState({ name: "", role: ROLES.WORKER });
@@ -595,15 +596,18 @@ export default function ShopGuard() {
       }
     }
     async function loadMachines() {
-      const { data, error } = await supabase
-        .from("machines")
-        .select("id, name, requires_loto, ppe, active, sop_steps")
-        .eq("company_id", company.id)
-        .eq("active", true);
+      const companyIds = await fetchCompanyRecordIds(supabase, company.id, company.company_code);
+      const { data, error } = await applyCompanyIdFilter(
+        supabase
+          .from("machines")
+          .select("id, name, requires_loto, ppe, active, sop_steps"),
+        companyIds,
+      ).eq("active", true);
       if (error) {
         console.error("Failed to load machines:", error);
-      } else if (data?.length) {
-        setMachines(data.map(machineRowToMachine));
+        setMachines([]);
+      } else {
+        setMachines((data || []).map(machineRowToMachine));
       }
     }
     async function loadSafetyMeetings() {
@@ -662,16 +666,22 @@ export default function ShopGuard() {
   }
 
   async function submitInspection() {
+    const machine = selectedMachine();
+    if (!company?.id || !currentUser?.id || !machine?.id) {
+      alert("Missing company, user, or machine information. Please go back and try again.");
+      return;
+    }
+
     const passed = inspectChecks.every(i => i.checked);
     const { error } = await supabase
       .from("inspections")
       .insert({
         company_id: company.id,
-        machine_id: selectedMachineId,
+        machine_id: machine.id,
         employee_id: currentUser.id,
         employee_name: currentUser.name,
         passed,
-        notes: inspectNotes,
+        notes: inspectNotes || "",
       });
 
     if (error) {
@@ -681,7 +691,7 @@ export default function ShopGuard() {
     }
 
     const ts = Date.now();
-    setMachines(prev => prev.map(m => m.id === selectedMachineId ? { ...m, lastInspectedTs: ts, inspectionLog: [{ by: currentUser.name, ts, notes: inspectNotes, passed }, ...m.inspectionLog] } : m));
+    setMachines(prev => prev.map(m => m.id === machine.id ? { ...m, lastInspectedTs: ts, inspectionLog: [{ by: currentUser.name, ts, notes: inspectNotes, passed }, ...m.inspectionLog] } : m));
     setInspectDone(true);
   }
 
@@ -786,6 +796,7 @@ export default function ShopGuard() {
     try {
       await exportAndEmailOshaRecords({
         companyId: company.id,
+        companyCode: company.company_code,
         companyName: company.name,
         safetyEmail: company.safety_email,
       });

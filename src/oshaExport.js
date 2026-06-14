@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import { applyCompanyIdFilter, fetchCompanyRecordIds } from "./companyIds";
 import { PHOTO_BUCKET, isPhotoUrl } from "./photoStorage";
 import { supabase } from "./supabase";
 
@@ -356,37 +357,44 @@ function buildEmailHtml({ companyName, records }) {
   `;
 }
 
-export async function fetchOshaRecords(companyId) {
+export async function fetchOshaRecords(companyId, companyCode) {
   if (!companyId) {
     throw new Error("Company ID is required to export OSHA records.");
   }
 
+  const companyIds = await fetchCompanyRecordIds(supabase, companyId, companyCode);
+
   const [machinesRes, inspectionsRes, incidentsRes, trainingRes, meetingsRes] = await Promise.all([
-    supabase
-      .from("machines")
-      .select("id, created_at, company_id, name, requires_loto, ppe, active, sop_steps")
-      .eq("company_id", companyId)
-      .order("name"),
-    supabase
-      .from("inspections")
-      .select("id, created_at, company_id, machine_id, employee_id, employee_name, passed, notes, machines(name)")
-      .eq("company_id", companyId)
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("incidents")
-      .select("id, created_at, company_id, type, location, description, reported_by, status, photo_urls")
-      .eq("company_id", companyId)
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("training_records")
-      .select("id, created_at, company_id, employee_id, employee_name, training_type, completed_date")
-      .eq("company_id", companyId)
-      .order("completed_date", { ascending: false }),
-    supabase
-      .from("safety_meetings")
-      .select("id, created_at, company_id, meeting_date, topic, notes, led_by, attendees")
-      .eq("company_id", companyId)
-      .order("meeting_date", { ascending: false }),
+    applyCompanyIdFilter(
+      supabase
+        .from("machines")
+        .select("id, created_at, company_id, name, requires_loto, ppe, active, sop_steps"),
+      companyIds,
+    ).order("name"),
+    applyCompanyIdFilter(
+      supabase
+        .from("inspections")
+        .select("id, created_at, company_id, machine_id, employee_id, employee_name, passed, notes, machines(name)"),
+      companyIds,
+    ).order("created_at", { ascending: false }),
+    applyCompanyIdFilter(
+      supabase
+        .from("incidents")
+        .select("id, created_at, company_id, type, location, description, reported_by, status, photo_urls"),
+      companyIds,
+    ).order("created_at", { ascending: false }),
+    applyCompanyIdFilter(
+      supabase
+        .from("training_records")
+        .select("id, created_at, company_id, employee_id, employee_name, training_type, completed_date"),
+      companyIds,
+    ).order("completed_date", { ascending: false }),
+    applyCompanyIdFilter(
+      supabase
+        .from("safety_meetings")
+        .select("id, created_at, company_id, meeting_date, topic, notes, led_by, attendees"),
+      companyIds,
+    ).order("meeting_date", { ascending: false }),
   ]);
 
   const errors = [machinesRes.error, inspectionsRes.error, incidentsRes.error, trainingRes.error].filter(Boolean);
@@ -562,8 +570,8 @@ export async function sendOshaEmail({ to, companyName, pdfDoc, records }) {
   }
 }
 
-export async function exportAndEmailOshaRecords({ companyId, companyName, safetyEmail }) {
-  const records = await fetchOshaRecords(companyId);
+export async function exportAndEmailOshaRecords({ companyId, companyCode, companyName, safetyEmail }) {
+  const records = await fetchOshaRecords(companyId, companyCode);
   const pdfDoc = await generateOshaPdf({ companyName, records });
   await sendOshaEmail({ to: safetyEmail, companyName, pdfDoc, records });
   return records;
