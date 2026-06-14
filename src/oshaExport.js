@@ -190,28 +190,150 @@ async function addIncidentPhotosToPdf(doc, photoUrls, y) {
   return y;
 }
 
-function buildIncidentPhotosEmailHtml(incidents) {
-  const incidentsWithPhotos = incidents.filter((incident) => getIncidentPhotoUrls(incident).length > 0);
-  if (!incidentsWithPhotos.length) return "";
+function formatLotoStatus(machine) {
+  return machine.requires_loto ? "LOTO Required" : "No LOTO Required";
+}
 
-  let html = '<h2 style="color:#c83c00;font-size:16px;margin:24px 0 12px;">Incident Photos</h2>';
-  incidentsWithPhotos.forEach((incident, index) => {
+function formatAttendees(attendees) {
+  if (Array.isArray(attendees)) return attendees.length ? attendees.join(", ") : "—";
+  if (typeof attendees === "string") {
+    try {
+      const parsed = JSON.parse(attendees);
+      return Array.isArray(parsed) ? (parsed.length ? parsed.join(", ") : "—") : attendees;
+    } catch {
+      return attendees || "—";
+    }
+  }
+  return "—";
+}
+
+function getInspectionMachineName(inspection, machineMap) {
+  return inspection.machines?.name || machineMap[inspection.machine_id] || `Machine #${inspection.machine_id || "?"}`;
+}
+
+function emailSectionTitle(title, count) {
+  return `<h2 style="color:#c83c00;font-size:16px;margin:28px 0 12px;border-bottom:2px solid #c83c00;padding-bottom:4px;">${escapeHtml(title)} (${count})</h2>`;
+}
+
+function emailEmptySection(message) {
+  return `<p style="color:#666;font-style:italic;margin:0 0 8px;">${escapeHtml(message)}</p>`;
+}
+
+function emailRecordCard(content) {
+  return `<div style="margin-bottom:14px;padding:12px;border:1px solid #ddd;border-radius:4px;background:#fafafa;">${content}</div>`;
+}
+
+function buildMachinesEmailHtml(machines) {
+  let html = emailSectionTitle("Machines", machines.length);
+  if (!machines.length) {
+    return html + emailEmptySection("No machine records on file.");
+  }
+
+  machines.forEach((machine, index) => {
+    html += emailRecordCard(`
+      <div style="font-weight:bold;margin-bottom:6px;">${index + 1}. ${escapeHtml(machine.name || "Unnamed machine")}</div>
+      <div style="font-size:13px;line-height:1.6;">
+        <div><strong>Recorded:</strong> ${escapeHtml(formatTimestamp(machine.created_at))}</div>
+        <div><strong>Required PPE:</strong> ${escapeHtml(parsePpe(machine.ppe))}</div>
+        <div><strong>LOTO Status:</strong> ${escapeHtml(formatLotoStatus(machine))}</div>
+      </div>
+    `);
+  });
+
+  return html;
+}
+
+function buildInspectionsEmailHtml(inspections, machineMap) {
+  let html = emailSectionTitle("Inspections", inspections.length);
+  if (!inspections.length) {
+    return html + emailEmptySection("No inspection records on file.");
+  }
+
+  inspections.forEach((inspection, index) => {
+    const machineName = getInspectionMachineName(inspection, machineMap);
+    html += emailRecordCard(`
+      <div style="font-weight:bold;margin-bottom:6px;">${index + 1}. ${escapeHtml(machineName)}</div>
+      <div style="font-size:13px;line-height:1.6;">
+        <div><strong>Date &amp; Time:</strong> ${escapeHtml(formatTimestamp(inspection.created_at))}</div>
+        <div><strong>Employee:</strong> ${escapeHtml(inspection.employee_name)}</div>
+        <div><strong>Result:</strong> ${inspection.passed ? "PASSED" : "FAILED"}</div>
+        <div><strong>Notes:</strong> ${escapeHtml(inspection.notes)}</div>
+      </div>
+    `);
+  });
+
+  return html;
+}
+
+function buildIncidentsEmailHtml(incidents) {
+  let html = emailSectionTitle("Incidents", incidents.length);
+  if (!incidents.length) {
+    return html + emailEmptySection("No incident records on file.");
+  }
+
+  incidents.forEach((incident, index) => {
     const photos = getIncidentPhotoUrls(incident);
-    const title = escapeHtml(`${incident.type || "Incident"} — ${incident.location || "Unknown location"}`);
-    const reported = escapeHtml(formatTimestamp(incident.created_at));
     const images = photos
       .map(
         (url, photoIndex) =>
-          `<img src="${escapeHtml(url)}" alt="Incident photo ${photoIndex + 1}" style="max-width:280px;max-height:280px;border:1px solid #ccc;border-radius:4px;margin:4px;" />`,
+          `<img src="${escapeHtml(url)}" alt="Incident photo ${photoIndex + 1}" style="max-width:280px;max-height:280px;border:1px solid #ccc;border-radius:4px;margin:4px 4px 0 0;" />`,
       )
       .join("");
 
-    html += `
-      <div style="margin-bottom:20px;padding:12px;border:1px solid #ddd;border-radius:4px;">
-        <div style="font-weight:bold;margin-bottom:4px;">${index + 1}. ${title}</div>
-        <div style="font-size:12px;color:#666;margin-bottom:8px;">Reported: ${reported}</div>
-        <div>${images}</div>
-      </div>`;
+    html += emailRecordCard(`
+      <div style="font-weight:bold;margin-bottom:6px;">${index + 1}. ${escapeHtml(incident.type || "Incident")} — ${escapeHtml(incident.location || "Unknown location")}</div>
+      <div style="font-size:13px;line-height:1.6;">
+        <div><strong>Reported:</strong> ${escapeHtml(formatTimestamp(incident.created_at))}</div>
+        <div><strong>Reported By:</strong> ${escapeHtml(incident.reported_by)}</div>
+        <div><strong>Status:</strong> ${escapeHtml(incident.status)}</div>
+        <div><strong>Description:</strong> ${escapeHtml(incident.description)}</div>
+        ${photos.length ? `<div style="margin-top:8px;"><strong>Photos (${photos.length}):</strong><div>${images}</div></div>` : ""}
+      </div>
+    `);
+  });
+
+  return html;
+}
+
+function buildTrainingEmailHtml(trainingRecords) {
+  let html = emailSectionTitle("Training Records", trainingRecords.length);
+  if (!trainingRecords.length) {
+    return html + emailEmptySection("No training records on file.");
+  }
+
+  trainingRecords.forEach((record, index) => {
+    html += emailRecordCard(`
+      <div style="font-weight:bold;margin-bottom:6px;">${index + 1}. ${escapeHtml(record.training_type || "Training")}</div>
+      <div style="font-size:13px;line-height:1.6;">
+        <div><strong>Employee:</strong> ${escapeHtml(record.employee_name)}</div>
+        <div><strong>Completed Date:</strong> ${escapeHtml(formatDate(record.completed_date))}</div>
+        <div><strong>Logged:</strong> ${escapeHtml(formatTimestamp(record.created_at))}</div>
+      </div>
+    `);
+  });
+
+  return html;
+}
+
+function buildSafetyMeetingsEmailHtml(meetings) {
+  let html = emailSectionTitle("Safety Meetings", meetings.length);
+  if (!meetings.length) {
+    return html + emailEmptySection("No safety meeting records on file.");
+  }
+
+  meetings.forEach((meeting, index) => {
+    const meetingDate = meeting.meeting_date || meeting.created_at;
+    const covered = meeting.notes || meeting.topic;
+    html += emailRecordCard(`
+      <div style="font-weight:bold;margin-bottom:6px;">${index + 1}. ${escapeHtml(meeting.topic || "Safety Meeting")}</div>
+      <div style="font-size:13px;line-height:1.6;">
+        <div><strong>Date:</strong> ${escapeHtml(formatTimestamp(meetingDate))}</div>
+        <div><strong>Topics Covered:</strong> ${escapeHtml(covered)}</div>
+        <div><strong>Attendees:</strong> ${escapeHtml(formatAttendees(meeting.attendees))}</div>
+        ${meeting.led_by ? `<div><strong>Led By:</strong> ${escapeHtml(meeting.led_by)}</div>` : ""}
+        <div><strong>Logged:</strong> ${escapeHtml(formatTimestamp(meeting.created_at))}</div>
+      </div>
+    `);
   });
 
   return html;
@@ -219,21 +341,52 @@ function buildIncidentPhotosEmailHtml(incidents) {
 
 function buildEmailHtml({ companyName, records }) {
   const exportedAt = formatTimestamp(new Date().toISOString());
-  const incidentPhotosHtml = buildIncidentPhotosEmailHtml(records.incidents);
+  const machineMap = Object.fromEntries(records.machines.map((machine) => [machine.id, machine.name]));
 
   return `
-    <p>OSHA Panic Mode export for <strong>${escapeHtml(companyName)}</strong>.</p>
-    <p>All safety records are attached as a PDF${incidentPhotosHtml ? ", including incident photos" : ""}. Exported ${escapeHtml(exportedAt)}.</p>
-    ${incidentPhotosHtml}
+    <div style="font-family:Arial,sans-serif;color:#222;max-width:720px;">
+      <p>OSHA Panic Mode export for <strong>${escapeHtml(companyName)}</strong>.</p>
+      <p>Exported ${escapeHtml(exportedAt)}. A full PDF copy is attached to this email.</p>
+      ${buildMachinesEmailHtml(records.machines)}
+      ${buildInspectionsEmailHtml(records.inspections, machineMap)}
+      ${buildIncidentsEmailHtml(records.incidents)}
+      ${buildTrainingEmailHtml(records.trainingRecords)}
+      ${buildSafetyMeetingsEmailHtml(records.safetyMeetings || [])}
+    </div>
   `;
 }
 
 export async function fetchOshaRecords(companyId) {
-  const [machinesRes, inspectionsRes, incidentsRes, trainingRes] = await Promise.all([
-    supabase.from("machines").select("*").eq("company_id", companyId).order("name"),
-    supabase.from("inspections").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
-    supabase.from("incidents").select("*").eq("company_id", companyId).order("created_at", { ascending: false }),
-    supabase.from("training_records").select("*").eq("company_id", companyId).order("completed_date", { ascending: false }),
+  if (!companyId) {
+    throw new Error("Company ID is required to export OSHA records.");
+  }
+
+  const [machinesRes, inspectionsRes, incidentsRes, trainingRes, meetingsRes] = await Promise.all([
+    supabase
+      .from("machines")
+      .select("id, created_at, company_id, name, requires_loto, ppe, active, sop_steps")
+      .eq("company_id", companyId)
+      .order("name"),
+    supabase
+      .from("inspections")
+      .select("id, created_at, company_id, machine_id, employee_id, employee_name, passed, notes, machines(name)")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("incidents")
+      .select("id, created_at, company_id, type, location, description, reported_by, status, photo_urls")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("training_records")
+      .select("id, created_at, company_id, employee_id, employee_name, training_type, completed_date")
+      .eq("company_id", companyId)
+      .order("completed_date", { ascending: false }),
+    supabase
+      .from("safety_meetings")
+      .select("id, created_at, company_id, meeting_date, topic, notes, led_by, attendees")
+      .eq("company_id", companyId)
+      .order("meeting_date", { ascending: false }),
   ]);
 
   const errors = [machinesRes.error, inspectionsRes.error, incidentsRes.error, trainingRes.error].filter(Boolean);
@@ -241,11 +394,16 @@ export async function fetchOshaRecords(companyId) {
     throw new Error(errors[0].message || "Failed to load records from Supabase");
   }
 
+  if (meetingsRes.error && meetingsRes.error.code !== "PGRST205") {
+    throw new Error(meetingsRes.error.message || "Failed to load safety meetings from Supabase");
+  }
+
   return {
     machines: machinesRes.data || [],
     inspections: inspectionsRes.data || [],
     incidents: incidentsRes.data || [],
     trainingRecords: trainingRes.data || [],
+    safetyMeetings: meetingsRes.error ? [] : (meetingsRes.data || []),
   };
 }
 
@@ -279,7 +437,7 @@ export async function generateOshaPdf({ companyName, records }) {
       y += LINE_HEIGHT + 2;
       y = addField(doc, "Recorded", formatTimestamp(machine.created_at), y);
       y = addField(doc, "Status", machine.active === false ? "Inactive" : "Active", y);
-      y = addField(doc, "Requires LOTO", machine.requires_loto ? "Yes" : "No", y);
+      y = addField(doc, "LOTO Status", formatLotoStatus(machine), y);
       y = addField(doc, "Required PPE", parsePpe(machine.ppe), y);
       y = addField(doc, "SOP Steps", formatSopSteps(machine.sop_steps), y);
       y = addRecordDivider(doc, y);
@@ -292,7 +450,7 @@ export async function generateOshaPdf({ companyName, records }) {
   } else {
     records.inspections.forEach((inspection, index) => {
       y = ensureSpace(doc, y, 36);
-      const machineName = machineMap[inspection.machine_id] || `Machine #${inspection.machine_id || "?"}`;
+      const machineName = getInspectionMachineName(inspection, machineMap);
       doc.setFont("helvetica", "bold");
       doc.text(`${index + 1}. ${machineName}`, MARGIN, y);
       doc.setFont("helvetica", "normal");
@@ -338,6 +496,25 @@ export async function generateOshaPdf({ companyName, records }) {
       y = addField(doc, "Employee", record.employee_name, y);
       y = addField(doc, "Completed Date", formatDate(record.completed_date), y);
       y = addField(doc, "Logged", formatTimestamp(record.created_at), y);
+      y = addRecordDivider(doc, y);
+    });
+  }
+
+  y = addSectionTitle(doc, `SAFETY MEETINGS (${(records.safetyMeetings || []).length})`, y);
+  if (!(records.safetyMeetings || []).length) {
+    y = addWrappedText(doc, "No safety meeting records on file.", MARGIN, y, CONTENT_WIDTH) + 6;
+  } else {
+    (records.safetyMeetings || []).forEach((meeting, index) => {
+      y = ensureSpace(doc, y, 40);
+      doc.setFont("helvetica", "bold");
+      doc.text(`${index + 1}. ${meeting.topic || "Safety Meeting"}`, MARGIN, y);
+      doc.setFont("helvetica", "normal");
+      y += LINE_HEIGHT + 2;
+      y = addField(doc, "Date", formatTimestamp(meeting.meeting_date || meeting.created_at), y);
+      y = addField(doc, "Topics Covered", meeting.notes || meeting.topic, y);
+      y = addField(doc, "Attendees", formatAttendees(meeting.attendees), y);
+      if (meeting.led_by) y = addField(doc, "Led By", meeting.led_by, y);
+      y = addField(doc, "Logged", formatTimestamp(meeting.created_at), y);
       y = addRecordDivider(doc, y);
     });
   }

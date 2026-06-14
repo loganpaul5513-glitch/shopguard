@@ -133,6 +133,22 @@ function incidentRowToIncident(row) {
   };
 }
 
+function safetyMeetingRowToMeeting(row) {
+  const meetingTs = row.meeting_date || row.created_at;
+  const date = meetingTs
+    ? new Date(meetingTs).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : "";
+  return {
+    id: row.id,
+    topic: row.topic || "",
+    date,
+    ledBy: row.led_by || "",
+    attendees: row.attendees || [],
+    notes: row.notes || "",
+    ts: meetingTs ? new Date(meetingTs).getTime() : Date.now(),
+  };
+}
+
 const DEFAULT_INSPECTION_CHECKLIST = [
   { id: 1, item: "Visual inspection — no visible damage" },
   { id: 2, item: "Guards and safety devices in place" },
@@ -502,10 +518,7 @@ export default function ShopGuard() {
   const [newChecklistItem, setNewChecklistItem] = useState("");
 
   // Safety meetings state
-  const [safetyMeetings, setSafetyMeetings] = useState([
-    { id: 1, topic: "Forklift Safety Review", date: "May 12, 2026", ledBy: "Dave Wilson", attendees: ["Joe Martinez", "Sarah Chen", "Mike Thompson"], notes: "Reviewed spotter requirements near dock doors.", ts: Date.now() - 1000 * 60 * 60 * 24 * 8 },
-    { id: 2, topic: "Monthly LOTO Refresher", date: "Apr 28, 2026", ledBy: "Linda Park", attendees: ["Sarah Chen", "Tony Reyes"], notes: "Went over updated procedure for Shear #7.", ts: Date.now() - 1000 * 60 * 60 * 24 * 22 },
-  ]);
+  const [safetyMeetings, setSafetyMeetings] = useState([]);
   const [newMeeting, setNewMeeting] = useState({ topic: "", notes: "", attendees: [] });
   const [meetingSubmitted, setMeetingSubmitted] = useState(false);
 
@@ -593,9 +606,22 @@ export default function ShopGuard() {
         setMachines(data.map(machineRowToMachine));
       }
     }
+    async function loadSafetyMeetings() {
+      const { data, error } = await supabase
+        .from("safety_meetings")
+        .select("id, created_at, meeting_date, topic, notes, led_by, attendees")
+        .eq("company_id", company.id)
+        .order("meeting_date", { ascending: false });
+      if (error) {
+        console.error("Failed to load safety meetings:", error);
+      } else if (data) {
+        setSafetyMeetings(data.map(safetyMeetingRowToMeeting));
+      }
+    }
     loadEmployees();
     loadIncidents();
     loadMachines();
+    loadSafetyMeetings();
   }, [company]);
 
   const selectedMachine = () => machines.find(m => m.id === selectedMachineId);
@@ -693,6 +719,35 @@ export default function ShopGuard() {
       setLogTrainingDate("");
       setSelectedTrainingMember(null);
       setScreen(SCREENS.TRAINING);
+    }, 1800);
+  }
+
+  async function submitSafetyMeeting() {
+    const { data, error } = await supabase
+      .from("safety_meetings")
+      .insert({
+        company_id: company.id,
+        meeting_date: new Date().toISOString(),
+        topic: newMeeting.topic.trim(),
+        notes: newMeeting.notes.trim(),
+        led_by: currentUser?.name,
+        attendees: newMeeting.attendees,
+      })
+      .select("id, created_at, meeting_date, topic, notes, led_by, attendees")
+      .single();
+
+    if (error) {
+      console.error("Failed to save safety meeting:", error);
+      alert("Failed to save safety meeting. Please try again.");
+      return;
+    }
+
+    setSafetyMeetings(prev => [safetyMeetingRowToMeeting(data), ...prev]);
+    setMeetingSubmitted(true);
+    setTimeout(() => {
+      setMeetingSubmitted(false);
+      setNewMeeting({ topic: "", notes: "", attendees: [] });
+      setScreen(SCREENS.SAFETY_MEETINGS);
     }, 1800);
   }
 
@@ -2276,16 +2331,7 @@ export default function ShopGuard() {
 
           <button style={{ ...s.primaryBtn, opacity: (newMeeting.topic && newMeeting.attendees.length > 0) ? 1 : 0.4 }}
             disabled={!newMeeting.topic || newMeeting.attendees.length === 0}
-            onClick={() => {
-              setSafetyMeetings(prev => [{
-                id: prev.length + 1, topic: newMeeting.topic,
-                date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-                ledBy: currentUser?.name, attendees: newMeeting.attendees,
-                notes: newMeeting.notes, ts: Date.now()
-              }, ...prev]);
-              setMeetingSubmitted(true);
-              setTimeout(() => { setMeetingSubmitted(false); setNewMeeting({ topic: "", notes: "", attendees: [] }); setScreen(SCREENS.SAFETY_MEETINGS); }, 1800);
-            }}>
+            onClick={submitSafetyMeeting}>
             ✓ LOG MEETING
           </button>
         </div>
