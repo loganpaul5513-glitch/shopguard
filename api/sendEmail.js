@@ -9,7 +9,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ message: "Resend API key is not configured." });
   }
 
-  const { to, subject, html, attachments, from } = req.body || {};
+  const { to, subject, html, attachments } = req.body || {};
 
   if (!to?.trim()) {
     return res.status(400).json({ message: "Recipient email is required." });
@@ -21,10 +21,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ message: "Email content is required." });
   }
 
-  const fromEmail =
-    (from?.trim() && !from.includes("onboarding@resend.dev") ? from.trim() : null) ||
-    process.env.RESEND_FROM_EMAIL ||
-    "ShopGuard Alerts <alerts@shopguardapp.com>";
+  const fromEmail = "ShopGuard Alerts <alerts@shopguardapp.com>";
 
   try {
     const response = await fetch("https://api.resend.com/emails", {
