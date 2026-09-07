@@ -174,7 +174,40 @@ function machineRowToMachine(row) {
     inspectionChecklist: DEFAULT_INSPECTION_CHECKLIST.map(i => ({ ...i })),
     sopSteps,
     pendingSop: null,
+    displayOrder: row.display_order !== undefined && row.display_order !== null ? Number(row.display_order) : null,
   };
+}
+
+function sortMachinesByDisplayOrder(machinesList, companyKey) {
+  const hasDbOrder = machinesList.some(m => m.displayOrder !== null && m.displayOrder !== undefined);
+  if (hasDbOrder) {
+    return [...machinesList].sort((a, b) => {
+      const ordA = a.displayOrder !== null && a.displayOrder !== undefined ? a.displayOrder : 999999;
+      const ordB = b.displayOrder !== null && b.displayOrder !== undefined ? b.displayOrder : 999999;
+      return ordA - ordB;
+    });
+  }
+
+  if (companyKey) {
+    try {
+      const saved = localStorage.getItem(`shopguard_machine_order_${companyKey}`);
+      if (saved) {
+        const ids = JSON.parse(saved);
+        if (Array.isArray(ids) && ids.length > 0) {
+          const map = new Map(ids.map((id, idx) => [String(id), idx]));
+          return [...machinesList].sort((a, b) => {
+            const posA = map.has(String(a.id)) ? map.get(String(a.id)) : 999999;
+            const posB = map.has(String(b.id)) ? map.get(String(b.id)) : 999999;
+            return posA - posB;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("Could not parse saved machine order from localStorage:", e);
+    }
+  }
+
+  return machinesList;
 }
 
 const initialMachines = [
@@ -526,6 +559,26 @@ export default function ShopGuard() {
   const [editingChecklist, setEditingChecklist] = useState([]);
   const [newChecklistItem, setNewChecklistItem] = useState("");
 
+  // PIN Reset state
+  const [confirmResetPin, setConfirmResetPin] = useState(false);
+  const [resettingPin, setResettingPin] = useState(false);
+  const [pinResetSuccess, setPinResetSuccess] = useState(false);
+
+  // Employee Edit state
+  const [isEditingMember, setIsEditingMember] = useState(false);
+  const [editMemberName, setEditMemberName] = useState("");
+  const [editMemberRole, setEditMemberRole] = useState(ROLES.WORKER);
+  const [savingMember, setSavingMember] = useState(false);
+  const [editMemberError, setEditMemberError] = useState("");
+
+  // Machine Drag and Drop state
+  const [draggedMachineIdx, setDraggedMachineIdx] = useState(null);
+  const [dragOverMachineIdx, setDragOverMachineIdx] = useState(null);
+  const [isHoldingMachineId, setIsHoldingMachineId] = useState(null);
+  const holdTimerRef = useRef(null);
+  const dragJustFinishedRef = useRef(false);
+  const touchStartPosRef = useRef({ x: 0, y: 0 });
+
   // Safety meetings state
   const [safetyMeetings, setSafetyMeetings] = useState([]);
   const [newMeeting, setNewMeeting] = useState({ topic: "", notes: "", attendees: [] });
@@ -610,17 +663,37 @@ export default function ShopGuard() {
     }
     async function loadMachines() {
       const companyIds = await fetchCompanyRecordIds(supabase, company.id, company.company_code);
-      const { data, error } = await applyCompanyIdFilter(
+      let data;
+      let error;
+
+      const resWithOrder = await applyCompanyIdFilter(
         supabase
           .from("machines")
-          .select("id, name, requires_loto, ppe, active, sop_steps"),
+          .select("id, name, requires_loto, ppe, active, sop_steps, display_order"),
         companyIds,
       ).eq("active", true);
+
+      if (resWithOrder.error && resWithOrder.error.code === "PGRST204") {
+        const fallbackRes = await applyCompanyIdFilter(
+          supabase
+            .from("machines")
+            .select("id, name, requires_loto, ppe, active, sop_steps"),
+          companyIds,
+        ).eq("active", true);
+        data = fallbackRes.data;
+        error = fallbackRes.error;
+      } else {
+        data = resWithOrder.data;
+        error = resWithOrder.error;
+      }
+
       if (error) {
         console.error("Failed to load machines:", error);
         setMachines([]);
       } else {
-        setMachines((data || []).map(machineRowToMachine));
+        const mapped = (data || []).map(machineRowToMachine);
+        const companyKey = company.id || company.company_code;
+        setMachines(sortMachinesByDisplayOrder(mapped, companyKey));
       }
     }
     async function loadSafetyMeetings() {
@@ -921,6 +994,267 @@ export default function ShopGuard() {
     }
   }
 
+  async function handleResetEmployeePin(memberId) {
+    if (!currentUser || !isSupervisor()) {
+      alert("Only supervisors can reset employee PINs.");
+      return;
+    }
+    if (memberId === currentUser?.id) {
+      alert("Supervisors cannot reset their own PIN from this screen.");
+      return;
+    }
+
+    setResettingPin(true);
+    try {
+      const { error } = await supabase
+        .from("employees")
+        .update({ pin: null })
+        .eq("id", memberId);
+
+      if (error) {
+        console.error("Failed to reset employee PIN:", error);
+        alert("Failed to reset PIN: " + (error.message || "Please try again."));
+        return;
+      }
+
+      setTeam(prev => prev.map(m => m.id === memberId ? { ...m, hasPin: false } : m));
+      setConfirmResetPin(false);
+      setPinResetSuccess(true);
+      setTimeout(() => setPinResetSuccess(false), 4000);
+    } catch (err) {
+      console.error("Unexpected error resetting PIN:", err);
+      alert("Failed to reset PIN. Please try again.");
+    } finally {
+      setResettingPin(false);
+    }
+  }
+
+  async function handleSaveMemberEdit(memberId) {
+    if (!currentUser || !isSupervisor()) {
+      alert("Only supervisors can edit employee details.");
+      return;
+    }
+
+    const trimmed = editMemberName.trim();
+    if (!trimmed) {
+      setEditMemberError("Employee name cannot be empty.");
+      return;
+    }
+
+    setSavingMember(true);
+    setEditMemberError("");
+
+    try {
+      const targetRole = memberId === currentUser?.id ? currentUser.role : editMemberRole;
+      const { error } = await supabase
+        .from("employees")
+        .update({
+          name: trimmed,
+          role: targetRole,
+        })
+        .eq("id", memberId);
+
+      if (error) {
+        console.error("Failed to update employee details:", error);
+        setEditMemberError("Failed to save changes: " + (error.message || "Please try again."));
+        return;
+      }
+
+      setTeam(prev =>
+        prev
+          .map(m => (m.id === memberId ? {
+            ...m,
+            name: trimmed,
+            role: targetRole,
+            avatar: nameToAvatar(trimmed),
+          } : m))
+          .sort((a, b) =>
+            (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }) ||
+            (a.name || "").localeCompare(b.name || "")
+          )
+      );
+
+      if (currentUser?.id === memberId) {
+        setCurrentUser(prev => prev ? {
+          ...prev,
+          name: trimmed,
+          role: targetRole,
+          avatar: nameToAvatar(trimmed),
+        } : prev);
+      }
+
+      setIsEditingMember(false);
+    } catch (err) {
+      console.error("Unexpected error updating employee:", err);
+      setEditMemberError("An unexpected error occurred. Please try again.");
+    } finally {
+      setSavingMember(false);
+    }
+  }
+
+  async function handleReorderMachines(sourceIndex, destIndex) {
+    if (sourceIndex === destIndex) return;
+    if (sourceIndex < 0 || destIndex < 0) return;
+    if (sourceIndex >= machines.length || destIndex >= machines.length) return;
+
+    const reordered = [...machines];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(destIndex, 0, moved);
+
+    const updated = reordered.map((m, idx) => ({ ...m, displayOrder: idx }));
+    setMachines(updated);
+
+    const companyKey = company?.id || company?.company_code;
+    if (companyKey) {
+      try {
+        localStorage.setItem(
+          `shopguard_machine_order_${companyKey}`,
+          JSON.stringify(updated.map(m => m.id))
+        );
+      } catch (e) {
+        console.warn("Could not save machine order to localStorage:", e);
+      }
+    }
+
+    try {
+      const updates = updated.map((m, idx) =>
+        supabase
+          .from("machines")
+          .update({ display_order: idx })
+          .eq("id", m.id)
+      );
+      const results = await Promise.all(updates);
+      const err = results.find(r => r?.error)?.error;
+      if (err && err.code !== "PGRST204") {
+        console.warn("Could not update display_order in Supabase:", err);
+      }
+    } catch (err) {
+      console.warn("Failed to persist display_order to Supabase:", err);
+    }
+  }
+
+  function handleMachinePointerDown(e, machineId, index) {
+    if (!isSupervisor() || machineSearch.trim()) return;
+    touchStartPosRef.current = { x: e.clientX, y: e.clientY };
+    dragJustFinishedRef.current = false;
+    if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+
+    holdTimerRef.current = setTimeout(() => {
+      setIsHoldingMachineId(machineId);
+      setDraggedMachineIdx(index);
+      if (navigator.vibrate) {
+        try {
+          navigator.vibrate(50);
+        } catch {
+          // ignore vibration failure if not supported by browser permissions
+        }
+      }
+    }, 280);
+  }
+
+  function handleMachinePointerMove(e) {
+    if (holdTimerRef.current && isHoldingMachineId === null) {
+      const dx = Math.abs(e.clientX - touchStartPosRef.current.x);
+      const dy = Math.abs(e.clientY - touchStartPosRef.current.y);
+      if (dx > 10 || dy > 10) {
+        clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (isHoldingMachineId !== null) {
+      if (e.cancelable) e.preventDefault();
+      const targetEl = document.elementFromPoint(e.clientX, e.clientY);
+      const cardEl = targetEl ? targetEl.closest("[data-machine-index]") : null;
+      if (cardEl) {
+        const overIdx = parseInt(cardEl.getAttribute("data-machine-index"), 10);
+        if (!isNaN(overIdx) && overIdx !== dragOverMachineIdx) {
+          setDragOverMachineIdx(overIdx);
+        }
+      }
+    }
+  }
+
+  function handleMachinePointerUp() {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+
+    if (isHoldingMachineId !== null) {
+      dragJustFinishedRef.current = true;
+      if (draggedMachineIdx !== null && dragOverMachineIdx !== null && draggedMachineIdx !== dragOverMachineIdx) {
+        handleReorderMachines(draggedMachineIdx, dragOverMachineIdx);
+      }
+      setIsHoldingMachineId(null);
+      setDraggedMachineIdx(null);
+      setDragOverMachineIdx(null);
+      setTimeout(() => {
+        dragJustFinishedRef.current = false;
+      }, 150);
+    }
+  }
+
+  function handleMachinePointerCancel() {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    setIsHoldingMachineId(null);
+    setDraggedMachineIdx(null);
+    setDragOverMachineIdx(null);
+  }
+
+  function handleMachineDragStart(e, index) {
+    if (!isSupervisor() || machineSearch.trim()) {
+      e.preventDefault();
+      return;
+    }
+    setDraggedMachineIdx(index);
+    dragJustFinishedRef.current = true;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(index));
+  }
+
+  function handleMachineDragOver(e, index) {
+    if (!isSupervisor() || machineSearch.trim()) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverMachineIdx !== index) {
+      setDragOverMachineIdx(index);
+    }
+  }
+
+  function handleMachineDragLeave(e, index) {
+    if (dragOverMachineIdx === index) {
+      setDragOverMachineIdx(null);
+    }
+  }
+
+  function handleMachineDrop(e, destIndex) {
+    e.preventDefault();
+    const sourceIndex = draggedMachineIdx !== null ? draggedMachineIdx : parseInt(e.dataTransfer.getData("text/plain"), 10);
+    if (!isNaN(sourceIndex) && sourceIndex !== destIndex) {
+      handleReorderMachines(sourceIndex, destIndex);
+    }
+    setDraggedMachineIdx(null);
+    setDragOverMachineIdx(null);
+    setIsHoldingMachineId(null);
+    setTimeout(() => {
+      dragJustFinishedRef.current = false;
+    }, 150);
+  }
+
+  function handleMachineDragEnd() {
+    setDraggedMachineIdx(null);
+    setDragOverMachineIdx(null);
+    setIsHoldingMachineId(null);
+    setTimeout(() => {
+      dragJustFinishedRef.current = false;
+    }, 150);
+  }
+
   async function submitIncident() {
     const { data, error } = await supabase
       .from("incidents")
@@ -1049,6 +1383,10 @@ export default function ShopGuard() {
 
       setTeam(prev => prev.filter(m => m.id !== memberId));
       setConfirmDeleteMember(false);
+      setConfirmResetPin(false);
+      setIsEditingMember(false);
+      setPinResetSuccess(false);
+      setEditMemberError("");
       setSelectedMemberId(null);
       setScreen(SCREENS.TEAM);
     } catch (err) {
@@ -1648,7 +1986,15 @@ export default function ShopGuard() {
           ) : (
             filteredTeam.map(member => (
               <div key={member.id} style={{ ...s.machineCard, borderLeft: `4px solid ${member.active ? ROLE_COLORS[member.role] : "#333"}`, opacity: member.active ? 1 : 0.5 }}
-                onClick={() => { setSelectedMemberId(member.id); setConfirmDeleteMember(false); setScreen(SCREENS.TEAM_MEMBER); }}>
+                onClick={() => {
+                  setSelectedMemberId(member.id);
+                  setConfirmDeleteMember(false);
+                  setConfirmResetPin(false);
+                  setIsEditingMember(false);
+                  setPinResetSuccess(false);
+                  setEditMemberError("");
+                  setScreen(SCREENS.TEAM_MEMBER);
+                }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ ...s.avatar(member.role), opacity: member.active ? 1 : 0.5 }}>{member.avatar}</div>
                   <div>
@@ -1674,15 +2020,156 @@ export default function ShopGuard() {
     if (!member) return null;
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => { setConfirmDeleteMember(false); setScreen(SCREENS.TEAM); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.header}>
+          <button
+            style={s.backBtn}
+            onClick={() => {
+              setConfirmDeleteMember(false);
+              setConfirmResetPin(false);
+              setIsEditingMember(false);
+              setPinResetSuccess(false);
+              setEditMemberError("");
+              setScreen(SCREENS.TEAM);
+            }}
+          >
+            ← BACK
+          </button>
+          <div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div>
+        </div>
         <div style={s.content}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
-            <div style={{ ...s.avatar(member.role), width: 56, height: 56, fontSize: 18 }}>{member.avatar}</div>
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 800 }}>{member.name}</div>
-              <span style={s.roleTag(member.role)}>{member.role}</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ ...s.avatar(member.role), width: 56, height: 56, fontSize: 18 }}>{member.avatar}</div>
+              <div>
+                <div style={{ fontSize: 22, fontWeight: 800 }}>{member.name}</div>
+                <span style={s.roleTag(member.role)}>{member.role}</span>
+              </div>
             </div>
+            {isSupervisor() && !isEditingMember && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditMemberName(member.name);
+                  setEditMemberRole(member.role);
+                  setEditMemberError("");
+                  setIsEditingMember(true);
+                }}
+                style={{
+                  background: "#161a23",
+                  border: "1px solid #ff6b00",
+                  color: "#ff6b00",
+                  padding: "8px 14px",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: 1,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                ✏ EDIT
+              </button>
+            )}
           </div>
+
+          {isEditingMember && (
+            <div style={{ background: "#161a23", border: "2px solid #ff6b00", padding: 16, marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 2, color: "#ff6b00", textTransform: "uppercase", marginBottom: 12 }}>
+                Edit Employee Details
+              </div>
+
+              {editMemberError && (
+                <div style={{ ...s.alertBanner("red"), marginBottom: 12 }}>
+                  {editMemberError}
+                </div>
+              )}
+
+              <label style={s.formLabel}>Full Name *</label>
+              <input
+                style={s.input}
+                type="text"
+                placeholder="Employee full name"
+                value={editMemberName}
+                onChange={e => {
+                  setEditMemberName(e.target.value);
+                  setEditMemberError("");
+                }}
+              />
+
+              <label style={s.formLabel}>Role</label>
+              {member.id === currentUser?.id ? (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ padding: "10px 12px", background: "#0f1117", border: "1px solid #333", color: "#888", fontSize: 13 }}>
+                    {member.role.toUpperCase()} (Cannot change your own role)
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 16 }}>
+                  {ALL_ROLES.map(role => {
+                    const active = editMemberRole === role;
+                    return (
+                      <button
+                        key={role}
+                        type="button"
+                        onClick={() => setEditMemberRole(role)}
+                        style={{
+                          background: active ? ROLE_COLORS[role] + "22" : "#0f1117",
+                          border: `2px solid ${active ? ROLE_COLORS[role] : "#333"}`,
+                          color: active ? ROLE_COLORS[role] : "#888",
+                          padding: "10px 4px",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          cursor: "pointer",
+                          letterSpacing: 1,
+                          textTransform: "uppercase",
+                          fontFamily: "inherit",
+                          textAlign: "center",
+                        }}
+                      >
+                        {role}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={savingMember}
+                  style={{
+                    ...s.primaryBtn,
+                    padding: "10px 16px",
+                    fontSize: 13,
+                    flex: 1,
+                    opacity: savingMember ? 0.6 : 1,
+                  }}
+                  onClick={() => handleSaveMemberEdit(member.id)}
+                >
+                  {savingMember ? "SAVING..." : "SAVE CHANGES"}
+                </button>
+                <button
+                  type="button"
+                  disabled={savingMember}
+                  style={{
+                    ...s.backBtn,
+                    padding: "10px 16px",
+                    fontSize: 13,
+                    flex: 1,
+                    textAlign: "center",
+                  }}
+                  onClick={() => {
+                    setIsEditingMember(false);
+                    setEditMemberError("");
+                  }}
+                >
+                  CANCEL
+                </button>
+              </div>
+            </div>
+          )}
 
           <div style={s.sectionTitle}>Role Assignment</div>
           <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>Tap a role to assign it. Changes take effect immediately.</div>
@@ -1725,6 +2212,101 @@ export default function ShopGuard() {
               </button>
             </div>
           )}
+
+          <div style={s.sectionTitle}>Login PIN &amp; Security</div>
+          <div style={{ background: "#161a23", border: "1px solid #2a2e3a", padding: "14px 16px", marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#e8e8e0" }}>Employee PIN</div>
+                <div style={{ fontSize: 12, color: member.hasPin ? "#2ecc71" : "#f39c12", marginTop: 2 }}>
+                  {member.hasPin ? "● PIN is configured" : "○ No PIN set (pending setup)"}
+                </div>
+              </div>
+              <span style={s.badge(member.hasPin ? "green" : "yellow")}>
+                {member.hasPin ? "ACTIVE" : "NOT SET"}
+              </span>
+            </div>
+
+            {pinResetSuccess && (
+              <div style={{ ...s.alertBanner("orange"), background: "#0f2a1a", borderColor: "#2ecc71", color: "#2ecc71", marginTop: 8, marginBottom: 8 }}>
+                ✓ PIN has been cleared. {member.name} will be prompted to create a new PIN on next sign-in.
+              </div>
+            )}
+
+            {isSupervisor() && (
+              <div style={{ marginTop: 12 }}>
+                {member.id === currentUser?.id ? (
+                  <div style={{ fontSize: 12, color: "#777", fontStyle: "italic", padding: "8px 0" }}>
+                    Supervisors cannot reset their own PIN from this screen.
+                  </div>
+                ) : !confirmResetPin ? (
+                  <button
+                    type="button"
+                    style={{
+                      ...s.primaryBtn,
+                      background: "#2a1a00",
+                      border: "1px solid #ff6b00",
+                      color: "#ff6b00",
+                      padding: "10px 16px",
+                      fontSize: 13,
+                      fontWeight: 800,
+                      letterSpacing: 1,
+                      cursor: "pointer",
+                      width: "100%",
+                    }}
+                    onClick={() => {
+                      setPinResetSuccess(false);
+                      setConfirmResetPin(true);
+                    }}
+                  >
+                    🔑 RESET PIN
+                  </button>
+                ) : (
+                  <div style={{ background: "#2a1500", border: "2px solid #ff6b00", padding: 14, marginTop: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#ff6b00", marginBottom: 6 }}>
+                      ⚠ Confirm PIN Reset for {member.name}?
+                    </div>
+                    <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.5, marginBottom: 12 }}>
+                      This will clear their PIN in Supabase. The next time {member.name} logs in, they will be prompted to create a new PIN just like a first-time user.
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        type="button"
+                        disabled={resettingPin}
+                        style={{
+                          ...s.primaryBtn,
+                          background: "#ff6b00",
+                          color: "#000",
+                          padding: "10px 14px",
+                          fontSize: 13,
+                          fontWeight: 800,
+                          flex: 1,
+                          opacity: resettingPin ? 0.6 : 1,
+                        }}
+                        onClick={() => handleResetEmployeePin(member.id)}
+                      >
+                        {resettingPin ? "RESETTING..." : "YES — RESET PIN"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={resettingPin}
+                        style={{
+                          ...s.backBtn,
+                          padding: "10px 14px",
+                          fontSize: 13,
+                          flex: 1,
+                          textAlign: "center",
+                        }}
+                        onClick={() => setConfirmResetPin(false)}
+                      >
+                        CANCEL
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {isSupervisor() && member.id !== currentUser?.id && (
             <div style={{ marginTop: 14 }}>
@@ -2514,8 +3096,12 @@ export default function ShopGuard() {
 
   async function submitNewMachine() {
     const ppeList = newMachine.ppe ? newMachine.ppe.split(",").map(p => p.trim()).filter(Boolean) : [];
+    const newDisplayOrder = machines.length;
 
-    const { data, error } = await supabase
+    let data;
+    let error;
+
+    const resWithOrder = await supabase
       .from("machines")
       .insert({
         company_id: company.id,
@@ -2523,9 +3109,29 @@ export default function ShopGuard() {
         requires_loto: newMachine.lototo,
         ppe: ppeList,
         active: true,
+        display_order: newDisplayOrder,
       })
       .select("id")
       .single();
+
+    if (resWithOrder.error && resWithOrder.error.code === "PGRST204") {
+      const fallbackRes = await supabase
+        .from("machines")
+        .insert({
+          company_id: company.id,
+          name: newMachine.name.trim(),
+          requires_loto: newMachine.lototo,
+          ppe: ppeList,
+          active: true,
+        })
+        .select("id")
+        .single();
+      data = fallbackRes.data;
+      error = fallbackRes.error;
+    } else {
+      data = resWithOrder.data;
+      error = resWithOrder.error;
+    }
 
     if (error) {
       console.error("Failed to save machine:", error);
@@ -2551,8 +3157,20 @@ export default function ShopGuard() {
       ],
       sopSteps: [],
       pendingSop: null,
+      displayOrder: newDisplayOrder,
     };
-    setMachines(prev => [...prev, m]);
+    setMachines(prev => {
+      const updated = [...prev, m];
+      const companyKey = company?.id || company?.company_code;
+      if (companyKey) {
+        try {
+          localStorage.setItem(`shopguard_machine_order_${companyKey}`, JSON.stringify(updated.map(x => x.id)));
+        } catch (e) {
+          console.warn("Could not cache machine order:", e);
+        }
+      }
+      return updated;
+    });
     setMachineAdded(true);
     setTimeout(() => { setMachineAdded(false); setNewMachine({ name: "", ppe: "", lototo: false, sop: false }); setScreen(SCREENS.MACHINES); }, 1800);
   }
@@ -2603,6 +3221,7 @@ export default function ShopGuard() {
 
   // ── MACHINES LIST ──
   if (screen === SCREENS.MACHINES) {
+    const isSearching = !!machineSearch.trim();
     const filteredMachines = machines.filter(m =>
       m.name.toLowerCase().includes(machineSearch.toLowerCase().trim())
     );
@@ -2659,6 +3278,13 @@ export default function ShopGuard() {
             )}
           </div>
 
+          {isSupervisor() && !isSearching && machines.length > 1 && (
+            <div style={{ fontSize: 11, color: "#ff6b00", letterSpacing: 1, marginBottom: 12, display: "flex", alignItems: "center", gap: 6, fontWeight: 700 }}>
+              <span style={{ fontSize: 14 }}>⠿</span>
+              <span>PRESS &amp; HOLD A CARD TO DRAG &amp; REORDER</span>
+            </div>
+          )}
+
           {filteredMachines.length === 0 ? (
             <div style={{ background: "#161a23", border: "2px dashed #2a2e3a", padding: 32, textAlign: "center" }}>
               <div style={{ fontSize: 13, color: "#888" }}>
@@ -2675,15 +3301,89 @@ export default function ShopGuard() {
               )}
             </div>
           ) : (
-            filteredMachines.map(m => {
+            filteredMachines.map((m, index) => {
               const st = inspectionStatus(m.lastInspectedTs);
               const locked = m.activeLocks.length > 0;
+              const isBeingDragged = isHoldingMachineId === m.id || draggedMachineIdx === index;
+              const isDropTarget = dragOverMachineIdx === index && draggedMachineIdx !== null && draggedMachineIdx !== index;
+
+              let cardBorder = "1px solid #2a2e3a";
+              let cardBg = "#161a23";
+              let cardTransform = "none";
+              let cardShadow = "none";
+              let cardZIndex = 1;
+
+              if (isBeingDragged) {
+                cardBorder = "2px solid #ff6b00";
+                cardBg = "#1a1f2c";
+                cardTransform = "scale(1.02)";
+                cardShadow = "0 8px 24px rgba(255, 107, 0, 0.35)";
+                cardZIndex = 10;
+              } else if (isDropTarget) {
+                cardBorder = "2px dashed #ff6b00";
+                cardBg = "#202533";
+                cardTransform = "scale(0.99)";
+              }
+
               return (
-                <div key={m.id} style={s.machineCard} onClick={() => { setSelectedMachineId(m.id); setConfirmRemove(false); setScreen(SCREENS.MACHINE_DETAIL); }}>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 700 }}>{m.name}</div>
-                    <div style={{ fontSize: 11, color: locked ? "#e74c3c" : st === "ok" ? "#2ecc71" : st === "warning" ? "#f39c12" : "#e74c3c", marginTop: 3, fontWeight: 700 }}>
-                      {locked ? `🔒 LOCKED OUT (${m.activeLocks.length})` : timeAgo(m.lastInspectedTs)}
+                <div
+                  key={m.id}
+                  data-machine-index={index}
+                  data-machine-id={m.id}
+                  draggable={isSupervisor() && !isSearching}
+                  onDragStart={e => handleMachineDragStart(e, index)}
+                  onDragOver={e => handleMachineDragOver(e, index)}
+                  onDragLeave={e => handleMachineDragLeave(e, index)}
+                  onDrop={e => handleMachineDrop(e, index)}
+                  onDragEnd={handleMachineDragEnd}
+                  onPointerDown={e => handleMachinePointerDown(e, m.id, index)}
+                  onPointerMove={handleMachinePointerMove}
+                  onPointerUp={handleMachinePointerUp}
+                  onPointerCancel={handleMachinePointerCancel}
+                  onClick={() => {
+                    if (dragJustFinishedRef.current) {
+                      dragJustFinishedRef.current = false;
+                      return;
+                    }
+                    setSelectedMachineId(m.id);
+                    setConfirmRemove(false);
+                    setScreen(SCREENS.MACHINE_DETAIL);
+                  }}
+                  style={{
+                    ...s.machineCard,
+                    border: cardBorder,
+                    background: cardBg,
+                    transform: cardTransform,
+                    boxShadow: cardShadow,
+                    zIndex: cardZIndex,
+                    position: "relative",
+                    transition: isBeingDragged ? "transform 0.15s ease, box-shadow 0.15s ease" : "border 0.15s ease, background 0.15s ease",
+                    touchAction: isSupervisor() && !isSearching && isHoldingMachineId ? "none" : "pan-y",
+                    userSelect: "none",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    {isSupervisor() && !isSearching && (
+                      <div
+                        title="Press & hold to reorder"
+                        style={{
+                          color: isBeingDragged ? "#ff6b00" : "#666",
+                          fontSize: 16,
+                          marginRight: 10,
+                          cursor: isBeingDragged ? "grabbing" : "grab",
+                          userSelect: "none",
+                          flexShrink: 0,
+                          lineHeight: 1,
+                        }}
+                      >
+                        ⠿
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 700 }}>{m.name}</div>
+                      <div style={{ fontSize: 11, color: locked ? "#e74c3c" : st === "ok" ? "#2ecc71" : st === "warning" ? "#f39c12" : "#e74c3c", marginTop: 3, fontWeight: 700 }}>
+                        {locked ? `🔒 LOCKED OUT (${m.activeLocks.length})` : timeAgo(m.lastInspectedTs)}
+                      </div>
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
