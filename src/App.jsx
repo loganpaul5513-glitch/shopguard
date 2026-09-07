@@ -5,6 +5,7 @@ import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './ph
 import { exportAndEmailOshaRecords } from './oshaExport'
 
 const STORAGE_KEY_COMPANY_CODE = "shopguard_company_code";
+const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes of inactivity
 
 const SCREENS = {
   COMPANY_CODE: "company_code",
@@ -472,6 +473,7 @@ export default function ShopGuard() {
   const [pinLoading, setPinLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [screen, setScreen] = useState(SCREENS.COMPANY_CODE);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [machines, setMachines] = useState([]);
   const [team, setTeam] = useState([]);
   const [teamLoading, setTeamLoading] = useState(true);
@@ -1097,6 +1099,7 @@ export default function ShopGuard() {
     localStorage.setItem(STORAGE_KEY_COMPANY_CODE, validated.company_code);
     setCompany(validated);
     setCompanyCodeInput("");
+    setSessionExpired(false);
     setScreen(SCREENS.LOGIN);
   }
 
@@ -1136,6 +1139,7 @@ export default function ShopGuard() {
     setPendingLoginUser(null);
     setPinInput("");
     setPinConfirm("");
+    setSessionExpired(false);
     setScreen(SCREENS.DASHBOARD);
   }
 
@@ -1165,8 +1169,128 @@ export default function ShopGuard() {
     setCurrentUser(pendingLoginUser);
     setPendingLoginUser(null);
     setPinInput("");
+    setSessionExpired(false);
     setScreen(SCREENS.DASHBOARD);
   }
+
+  function handleSessionTimeout() {
+    if (!currentUserRef.current) return;
+    setCurrentUser(null);
+    setPendingLoginUser(null);
+    setPinInput("");
+    setPinConfirm("");
+    setPinError("");
+    setShowCamera(false);
+    setShowPanicConfirm(false);
+    setConfirmRemove(false);
+    setConfirmDeleteMember(false);
+    setShowRejectInput(false);
+    setSessionExpired(true);
+    setScreen(SCREENS.LOGIN);
+  }
+
+  const sessionTimerRef = useRef(null);
+  const lastActivityRef = useRef(Date.now());
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
+
+  const handleSessionTimeoutRef = useRef(handleSessionTimeout);
+  handleSessionTimeoutRef.current = handleSessionTimeout;
+
+  useEffect(() => {
+    // Expose trigger in dev/window for testing convenience
+    if (typeof window !== "undefined") {
+      window.__SHOPGUARD_TRIGGER_SESSION_TIMEOUT__ = () => handleSessionTimeoutRef.current();
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        delete window.__SHOPGUARD_TRIGGER_SESSION_TIMEOUT__;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // 5. The timeout should only apply when someone is logged in, not on the login or company code screens
+    const isLoggedIn = Boolean(currentUser) &&
+      screen !== SCREENS.COMPANY_CODE &&
+      screen !== SCREENS.LOGIN &&
+      screen !== SCREENS.PIN_SETUP &&
+      screen !== SCREENS.PIN_VERIFY;
+
+    if (!isLoggedIn) {
+      if (sessionTimerRef.current) {
+        clearTimeout(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+      return;
+    }
+
+    lastActivityRef.current = Date.now();
+
+    const startTimer = (delay = SESSION_TIMEOUT_MS) => {
+      if (sessionTimerRef.current) {
+        clearTimeout(sessionTimerRef.current);
+      }
+      sessionTimerRef.current = setTimeout(() => {
+        handleSessionTimeoutRef.current();
+      }, delay);
+    };
+
+    startTimer(SESSION_TIMEOUT_MS);
+
+    // 2. Any time the user taps or interacts with the app the 15 minute timer should reset
+    const handleActivity = () => {
+      const now = Date.now();
+      if (now - lastActivityRef.current >= SESSION_TIMEOUT_MS) {
+        handleSessionTimeoutRef.current();
+        return;
+      }
+      // Throttle timer resets to at most once per second for performance
+      if (now - lastActivityRef.current < 1000) {
+        return;
+      }
+      lastActivityRef.current = now;
+      startTimer(SESSION_TIMEOUT_MS);
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const elapsed = Date.now() - lastActivityRef.current;
+      if (elapsed >= SESSION_TIMEOUT_MS) {
+        handleSessionTimeoutRef.current();
+      } else {
+        startTimer(SESSION_TIMEOUT_MS - elapsed);
+      }
+    };
+
+    const activityEvents = [
+      "mousedown",
+      "mousemove",
+      "keydown",
+      "scroll",
+      "touchstart",
+      "pointerdown",
+      "click",
+    ];
+
+    activityEvents.forEach(evt => {
+      window.addEventListener(evt, handleActivity, { capture: true, passive: true });
+    });
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+
+    return () => {
+      if (sessionTimerRef.current) {
+        clearTimeout(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+      activityEvents.forEach(evt => {
+        window.removeEventListener(evt, handleActivity, { capture: true });
+      });
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+    };
+  }, [currentUser, screen]);
 
   async function handleCapture(dataUrl) {
     const folder = cameraTarget === "incident" ? "incidents" : "sops";
@@ -1246,6 +1370,18 @@ export default function ShopGuard() {
       <div style={s.app}>
         <div style={{ padding: 24, paddingTop: 48 }}>
           <button style={{ ...s.backBtn, marginBottom: 24 }} onClick={() => { setPendingLoginUser(null); setPinInput(""); setPinConfirm(""); setPinError(""); setScreen(SCREENS.LOGIN); }}>← BACK</button>
+          {sessionExpired && (
+            <div style={{ ...s.alertBanner("orange"), marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, lineHeight: 1.4 }}>
+              <span>Your session has expired for security. Please sign in again.</span>
+              <button
+                onClick={() => setSessionExpired(false)}
+                style={{ background: "transparent", border: "none", color: "#ff6b00", cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
+                aria-label="Dismiss notification"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
             <div style={s.avatar(pendingLoginUser.role)}>{pendingLoginUser.avatar}</div>
             <div>
@@ -1274,6 +1410,18 @@ export default function ShopGuard() {
       <div style={s.app}>
         <div style={{ padding: 24, paddingTop: 48 }}>
           <button style={{ ...s.backBtn, marginBottom: 24 }} onClick={() => { setPendingLoginUser(null); setPinInput(""); setPinError(""); setScreen(SCREENS.LOGIN); }}>← BACK</button>
+          {sessionExpired && (
+            <div style={{ ...s.alertBanner("orange"), marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, lineHeight: 1.4 }}>
+              <span>Your session has expired for security. Please sign in again.</span>
+              <button
+                onClick={() => setSessionExpired(false)}
+                style={{ background: "transparent", border: "none", color: "#ff6b00", cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
+                aria-label="Dismiss notification"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
             <div style={s.avatar(pendingLoginUser.role)}>{pendingLoginUser.avatar}</div>
             <div>
@@ -1302,6 +1450,18 @@ export default function ShopGuard() {
             <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>SHOP SAFETY PLATFORM</div>
             {company?.name && <div style={{ fontSize: 13, color: "#888", marginTop: 12 }}>{company.name}</div>}
           </div>
+          {sessionExpired && (
+            <div style={{ ...s.alertBanner("orange"), marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, lineHeight: 1.4 }}>
+              <span>Your session has expired for security. Please sign in again.</span>
+              <button
+                onClick={() => setSessionExpired(false)}
+                style={{ background: "transparent", border: "none", color: "#ff6b00", cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
+                aria-label="Dismiss notification"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Select your account</div>
           {teamLoading && <div style={{ color: "#888", letterSpacing: 2, marginBottom: 16 }}>LOADING TEAM...</div>}
           {!teamLoading && team.filter(user => user.active).length === 0 && (
@@ -3122,7 +3282,7 @@ export default function ShopGuard() {
             <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e0" }}>{currentUser?.name.split(" ")[0]}</div>
             <span style={{ ...s.roleTag(currentUser?.role), fontSize: 9, padding: "2px 7px", letterSpacing: 1 }}>{currentUser?.role}</span>
           </div>
-          <button onClick={() => { setCurrentUser(null); setPendingLoginUser(null); setPinInput(""); setScreen(SCREENS.LOGIN); }} style={{ ...s.backBtn, fontSize: 11, padding: "4px 8px" }}>SWITCH</button>
+          <button onClick={() => { setCurrentUser(null); setPendingLoginUser(null); setPinInput(""); setSessionExpired(false); setScreen(SCREENS.LOGIN); }} style={{ ...s.backBtn, fontSize: 11, padding: "4px 8px" }}>SWITCH</button>
         </div>
       </div>
       <div style={s.content}>
