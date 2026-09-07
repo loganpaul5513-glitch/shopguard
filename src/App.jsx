@@ -518,6 +518,9 @@ export default function ShopGuard() {
   const [newMachine, setNewMachine] = useState({ name: "", ppe: "", lototo: false, sop: false });
   const [machineAdded, setMachineAdded] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [deletingMachine, setDeletingMachine] = useState(false);
+  const [confirmDeleteMember, setConfirmDeleteMember] = useState(false);
+  const [deletingEmployee, setDeletingEmployee] = useState(false);
   const [editingChecklist, setEditingChecklist] = useState([]);
   const [newChecklistItem, setNewChecklistItem] = useState("");
 
@@ -578,11 +581,14 @@ export default function ShopGuard() {
         .from("employees")
         .select("id, name, role, active, pin")
         .eq("company_code", company.company_code)
-        .eq("active", true);
+        .order("name", { ascending: true });
       if (error) {
         console.error("Failed to load employees:", error);
       } else if (data) {
-        setTeam(data.map(employeeRowToMember));
+        const sorted = data
+          .map(employeeRowToMember)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }) || (a.name || "").localeCompare(b.name || ""));
+        setTeam(sorted);
       }
       setTeamLoading(false);
     }
@@ -900,8 +906,15 @@ export default function ShopGuard() {
     setRejectReason("");
   }
 
-  function updateMemberRole(memberId, newRole) {
+  async function updateMemberRole(memberId, newRole) {
     setTeam(prev => prev.map(m => m.id === memberId ? { ...m, role: newRole } : m));
+    const { error } = await supabase
+      .from("employees")
+      .update({ role: newRole })
+      .eq("id", memberId);
+    if (error) {
+      console.error("Failed to update employee role:", error);
+    }
   }
 
   async function submitIncident() {
@@ -971,13 +984,75 @@ export default function ShopGuard() {
       return;
     }
 
-    setTeam(prev => [...prev, employeeRowToMember(data)]);
+    const newMember = employeeRowToMember(data);
+    setTeam(prev =>
+      [...prev, newMember].sort(
+        (a, b) =>
+          (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }) ||
+          (a.name || "").localeCompare(b.name || "")
+      )
+    );
     setEmployeeAdded(true);
     setTimeout(() => {
       setEmployeeAdded(false);
       setNewEmployee({ name: "", role: ROLES.WORKER });
       setScreen(SCREENS.TEAM);
     }, 1800);
+  }
+
+  async function handleToggleEmployeeActive(memberId, active) {
+    setTeam(prev => prev.map(m => m.id === memberId ? { ...m, active } : m));
+    const { error } = await supabase
+      .from("employees")
+      .update({ active })
+      .eq("id", memberId);
+    if (error) {
+      console.error("Failed to update employee active status:", error);
+    }
+  }
+
+  async function handleDeleteEmployee(memberId) {
+    if (!currentUser || !isSupervisor()) {
+      alert("Only supervisors can delete employees.");
+      return;
+    }
+    if (memberId === currentUser?.id) {
+      alert("You cannot delete your own account.");
+      return;
+    }
+
+    setDeletingEmployee(true);
+    try {
+      const { error: trError } = await supabase
+        .from("training_records")
+        .delete()
+        .eq("employee_id", memberId);
+      if (trError) {
+        console.warn("Could not delete training records for employee:", trError);
+      }
+
+      const { error: empError } = await supabase
+        .from("employees")
+        .delete()
+        .eq("id", memberId);
+
+      if (empError) {
+        console.error("Failed to delete employee from Supabase:", empError);
+        alert("Failed to delete employee: " + (empError.message || "Please try again."));
+        setDeletingEmployee(false);
+        return;
+      }
+
+      setTeam(prev => prev.filter(m => m.id !== memberId));
+      setConfirmDeleteMember(false);
+      setSelectedMemberId(null);
+      setScreen(SCREENS.TEAM);
+    } catch (err) {
+      console.error("Unexpected error deleting employee:", err);
+      alert("Failed to delete employee. Please try again.");
+    } finally {
+      setDeletingEmployee(false);
+    }
   }
 
   function maintenanceDueStatus(item) {
@@ -1284,9 +1359,14 @@ export default function ShopGuard() {
 
   // ── TEAM MANAGEMENT ──
   if (screen === SCREENS.TEAM) {
-    const filteredTeam = team.filter(member =>
-      member.name.toLowerCase().includes(teamSearch.toLowerCase().trim())
-    );
+    const filteredTeam = team
+      .filter(member =>
+        member.name.toLowerCase().includes(teamSearch.toLowerCase().trim())
+      )
+      .sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }) ||
+        (a.name || "").localeCompare(b.name || "")
+      );
     return (
       <div style={s.app}>
         <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.DASHBOARD)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
@@ -1355,7 +1435,7 @@ export default function ShopGuard() {
           ) : (
             filteredTeam.map(member => (
               <div key={member.id} style={{ ...s.machineCard, borderLeft: `4px solid ${member.active ? ROLE_COLORS[member.role] : "#333"}`, opacity: member.active ? 1 : 0.5 }}
-                onClick={() => { setSelectedMemberId(member.id); setScreen(SCREENS.TEAM_MEMBER); }}>
+                onClick={() => { setSelectedMemberId(member.id); setConfirmDeleteMember(false); setScreen(SCREENS.TEAM_MEMBER); }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ ...s.avatar(member.role), opacity: member.active ? 1 : 0.5 }}>{member.avatar}</div>
                   <div>
@@ -1381,7 +1461,7 @@ export default function ShopGuard() {
     if (!member) return null;
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.TEAM)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.header}><button style={s.backBtn} onClick={() => { setConfirmDeleteMember(false); setScreen(SCREENS.TEAM); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
         <div style={s.content}>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
             <div style={{ ...s.avatar(member.role), width: 56, height: 56, fontSize: 18 }}>{member.avatar}</div>
@@ -1417,7 +1497,7 @@ export default function ShopGuard() {
               <div style={{ background: "#0f2a1a", border: "1px solid #2ecc71", padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#2ecc71" }}>● Active — can log in and use ShopGuard</div>
               {member.id !== currentUser?.id && (
                 <button style={{ ...s.primaryBtn, background: "#1a0a0a", border: "2px solid #e74c3c", color: "#e74c3c" }}
-                  onClick={() => setTeam(prev => prev.map(m => m.id === member.id ? { ...m, active: false } : m))}>
+                  onClick={() => handleToggleEmployeeActive(member.id, false)}>
                   DEACTIVATE EMPLOYEE
                 </button>
               )}
@@ -1427,9 +1507,45 @@ export default function ShopGuard() {
             <div>
               <div style={{ background: "#2a0a0a", border: "1px solid #e74c3c", padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#e74c3c" }}>● Inactive — locked out of ShopGuard</div>
               <button style={{ ...s.primaryBtn, background: "#0f2a1a", border: "2px solid #2ecc71", color: "#2ecc71" }}
-                onClick={() => setTeam(prev => prev.map(m => m.id === member.id ? { ...m, active: true } : m))}>
+                onClick={() => handleToggleEmployeeActive(member.id, true)}>
                 ↩ REACTIVATE EMPLOYEE
               </button>
+            </div>
+          )}
+
+          {isSupervisor() && member.id !== currentUser?.id && (
+            <div style={{ marginTop: 14 }}>
+              {!confirmDeleteMember ? (
+                <button
+                  style={{ ...s.primaryBtn, background: "none", border: "1px solid #3a1a1a", color: "#e74c3c", marginTop: 0 }}
+                  onClick={() => setConfirmDeleteMember(true)}
+                >
+                  PERMANENTLY DELETE EMPLOYEE
+                </button>
+              ) : (
+                <div style={{ background: "#1a0a0a", border: "2px solid #e74c3c", padding: 16 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#e74c3c", marginBottom: 8 }}>
+                    Permanently delete {member.name}?
+                  </div>
+                  <div style={{ fontSize: 12, color: "#aaa", marginBottom: 16 }}>
+                    This will permanently delete this employee from Supabase. This cannot be undone.
+                  </div>
+                  <button
+                    style={{ ...s.dangerBtn, fontSize: 14, padding: "12px 0", marginBottom: 10, opacity: deletingEmployee ? 0.6 : 1 }}
+                    disabled={deletingEmployee}
+                    onClick={() => handleDeleteEmployee(member.id)}
+                  >
+                    {deletingEmployee ? "DELETING..." : "YES — PERMANENTLY DELETE"}
+                  </button>
+                  <button
+                    style={{ ...s.backBtn, width: "100%", padding: 12 }}
+                    disabled={deletingEmployee}
+                    onClick={() => setConfirmDeleteMember(false)}
+                  >
+                    CANCEL
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -2007,7 +2123,7 @@ export default function ShopGuard() {
     const myLock = m.activeLocks.find(l => l.by === currentUser?.name);
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.MACHINES)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.header}><button style={s.backBtn} onClick={() => { setConfirmRemove(false); setScreen(SCREENS.MACHINES); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
         <div style={s.content}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
             <div style={s.statusDot(isLockedOut ? "critical" : st)}></div>
@@ -2116,10 +2232,14 @@ export default function ShopGuard() {
                   <div style={{ background: "#1a0a0a", border: "2px solid #e74c3c", padding: 16 }}>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "#e74c3c", marginBottom: 8 }}>Remove {m.name}?</div>
                     <div style={{ fontSize: 12, color: "#aaa", marginBottom: 16 }}>This will permanently delete this machine and all its records. This cannot be undone.</div>
-                    <button style={{ ...s.dangerBtn, fontSize: 14, padding: "12px 0", marginBottom: 10 }} onClick={() => { setMachines(prev => prev.filter(mac => mac.id !== m.id)); setConfirmRemove(false); setScreen(SCREENS.MACHINES); }}>
-                      YES — REMOVE MACHINE
+                    <button
+                      style={{ ...s.dangerBtn, fontSize: 14, padding: "12px 0", marginBottom: 10, opacity: deletingMachine ? 0.6 : 1 }}
+                      disabled={deletingMachine}
+                      onClick={() => handleDeleteMachine(m.id)}
+                    >
+                      {deletingMachine ? "REMOVING MACHINE..." : "YES — REMOVE MACHINE"}
                     </button>
-                    <button style={{ ...s.backBtn, width: "100%", padding: 12 }} onClick={() => setConfirmRemove(false)}>CANCEL</button>
+                    <button style={{ ...s.backBtn, width: "100%", padding: 12 }} disabled={deletingMachine} onClick={() => setConfirmRemove(false)}>CANCEL</button>
                   </div>
                 )}
               </div>
@@ -2128,6 +2248,54 @@ export default function ShopGuard() {
         </div>
       </div>
     );
+  }
+
+  async function handleDeleteMachine(machineId) {
+    if (!currentUser || !isSupervisor()) {
+      alert("Only supervisors can remove machines.");
+      return;
+    }
+
+    setDeletingMachine(true);
+    try {
+      // 1. First delete any related inspections for that machine from the inspections table
+      const { error: inspectError } = await supabase
+        .from("inspections")
+        .delete()
+        .eq("machine_id", machineId);
+
+      if (inspectError) {
+        console.error("Failed to delete related inspections:", inspectError);
+        alert("Failed to delete related inspections: " + (inspectError.message || "Please try again."));
+        setDeletingMachine(false);
+        return;
+      }
+
+      // 2. Then delete the machine itself from the machines table
+      const { error: machineError } = await supabase
+        .from("machines")
+        .delete()
+        .eq("id", machineId);
+
+      if (machineError) {
+        console.error("Failed to delete machine from Supabase:", machineError);
+        alert("Failed to delete machine: " + (machineError.message || "Please try again."));
+        setDeletingMachine(false);
+        return;
+      }
+
+      // 3. Update local state
+      setMachines(prev => prev.filter(mac => mac.id !== machineId));
+      setMaintenanceItems(prev => prev.filter(item => item.machineId !== machineId));
+      setConfirmRemove(false);
+      setSelectedMachineId(null);
+      setScreen(SCREENS.MACHINES);
+    } catch (err) {
+      console.error("Unexpected error deleting machine:", err);
+      alert("Failed to delete machine. Please try again.");
+    } finally {
+      setDeletingMachine(false);
+    }
   }
 
   async function submitNewMachine() {
@@ -2297,7 +2465,7 @@ export default function ShopGuard() {
               const st = inspectionStatus(m.lastInspectedTs);
               const locked = m.activeLocks.length > 0;
               return (
-                <div key={m.id} style={s.machineCard} onClick={() => { setSelectedMachineId(m.id); setScreen(SCREENS.MACHINE_DETAIL); }}>
+                <div key={m.id} style={s.machineCard} onClick={() => { setSelectedMachineId(m.id); setConfirmRemove(false); setScreen(SCREENS.MACHINE_DETAIL); }}>
                   <div>
                     <div style={{ fontSize: 15, fontWeight: 700 }}>{m.name}</div>
                     <div style={{ fontSize: 11, color: locked ? "#e74c3c" : st === "ok" ? "#2ecc71" : st === "warning" ? "#f39c12" : "#e74c3c", marginTop: 3, fontWeight: 700 }}>
