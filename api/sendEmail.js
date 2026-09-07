@@ -22,9 +22,9 @@ export default async function handler(req, res) {
   }
 
   const fromEmail =
-    from?.trim() ||
-    process.env.VITE_RESEND_FROM_EMAIL ||
-    "ShopGuard <onboarding@resend.dev>";
+    (from?.trim() && !from.includes("onboarding@resend.dev") ? from.trim() : null) ||
+    process.env.RESEND_FROM_EMAIL ||
+    "ShopGuard Alerts <alerts@shopguardapp.com>";
 
   try {
     const response = await fetch("https://api.resend.com/emails", {

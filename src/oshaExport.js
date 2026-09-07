@@ -1283,7 +1283,7 @@ export async function sendOshaEmail({ to, companyName, pdfDoc, records }) {
 
   const pdfBase64 = pdfDoc.output("datauristring").split(",")[1];
   const safeName = (companyName || "company").replace(/[^\w-]+/g, "-").toLowerCase();
-  const fromEmail = import.meta.env.VITE_RESEND_FROM_EMAIL || "ShopGuard <onboarding@resend.dev>";
+  const fromEmail = import.meta.env.VITE_RESEND_FROM_EMAIL || "ShopGuard Alerts <alerts@shopguardapp.com>";
 
   const response = await fetch("/api/sendEmail", {
     method: "POST",
