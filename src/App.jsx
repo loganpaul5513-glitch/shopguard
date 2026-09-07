@@ -539,6 +539,8 @@ export default function ShopGuard() {
   ]);
   const [newMaintenance, setNewMaintenance] = useState({ machineId: "", task: "", intervalDays: "30", assignedTo: "" });
   const [maintenanceAdded, setMaintenanceAdded] = useState(false);
+  const [confirmDeleteTaskId, setConfirmDeleteTaskId] = useState(null);
+  const [deletingTaskId, setDeletingTaskId] = useState(null);
 
   // Training management state
   const [trainingTypes, setTrainingTypes] = useState([
@@ -1057,6 +1059,56 @@ export default function ShopGuard() {
     }
   }
 
+  async function handleDeleteMaintenanceTask(item) {
+    if (!currentUser || !isSupervisor()) {
+      alert("Only supervisors can delete maintenance tasks.");
+      return;
+    }
+
+    setDeletingTaskId(item.id);
+    try {
+      const targetId = item.supabaseId || item.supabase_id || item.id;
+      const candidateTables = [
+        "maintenance_tasks",
+        "maintenance",
+        "maintenance_items",
+        "maintenance_schedules",
+      ];
+
+      for (const table of candidateTables) {
+        try {
+          const { error } = await supabase
+            .from(table)
+            .delete()
+            .eq("id", targetId);
+
+          if (!error) {
+            break;
+          }
+
+          const isTableMissing =
+            error.code === "PGRST205" ||
+            (error.message && error.message.toLowerCase().includes("could not find"));
+          const isInvalidType = error.code === "22P02";
+
+          if (!isTableMissing && !isInvalidType) {
+            console.warn(`Could not delete maintenance task from ${table}:`, error);
+          }
+        } catch (tableErr) {
+          console.warn(`Error attempting to delete from ${table}:`, tableErr);
+        }
+      }
+
+      setMaintenanceItems(prev => prev.filter(i => i.id !== item.id));
+      setConfirmDeleteTaskId(null);
+    } catch (err) {
+      console.error("Unexpected error deleting maintenance task:", err);
+      alert("Failed to delete maintenance task. Please try again.");
+    } finally {
+      setDeletingTaskId(null);
+    }
+  }
+
   function maintenanceDueStatus(item) {
     if (!item.lastDoneTs) return "overdue";
     const daysSince = (Date.now() - item.lastDoneTs) / (1000 * 60 * 60 * 24);
@@ -1184,6 +1236,7 @@ export default function ShopGuard() {
     setShowPanicConfirm(false);
     setConfirmRemove(false);
     setConfirmDeleteMember(false);
+    setConfirmDeleteTaskId(null);
     setShowRejectInput(false);
     setSessionExpired(true);
     setScreen(SCREENS.LOGIN);
@@ -2448,6 +2501,7 @@ export default function ShopGuard() {
       setMachines(prev => prev.filter(mac => mac.id !== machineId));
       setMaintenanceItems(prev => prev.filter(item => item.machineId !== machineId));
       setConfirmRemove(false);
+      setConfirmDeleteTaskId(null);
       setSelectedMachineId(null);
       setScreen(SCREENS.MACHINES);
     } catch (err) {
@@ -2559,7 +2613,7 @@ export default function ShopGuard() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
             <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1 }}>MACHINES</div>
             <div style={{ display: "flex", gap: 8 }}>
-              {isMaintenance() && <button onClick={() => setScreen(SCREENS.MAINTENANCE_SCHEDULE)} style={{ background: "#161a23", color: "#f39c12", border: "1px solid #f39c12", padding: "8px 12px", fontSize: 11, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>🔧 MAINT</button>}
+              {isMaintenance() && <button onClick={() => { setConfirmDeleteTaskId(null); setScreen(SCREENS.MAINTENANCE_SCHEDULE); }} style={{ background: "#161a23", color: "#f39c12", border: "1px solid #f39c12", padding: "8px 12px", fontSize: 11, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>🔧 MAINT</button>}
               {isSupervisor() && <button onClick={() => setScreen(SCREENS.MACHINE_ADD)} style={{ background: "#ff6b00", color: "#000", border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>+ ADD</button>}
             </div>
           </div>
@@ -2949,7 +3003,7 @@ export default function ShopGuard() {
     );
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.MAINTENANCE_SCHEDULE)}>← BACK</button><div style={{ ...s.logo, fontSize: 17 }}>ADD TASK</div></div>
+        <div style={s.header}><button style={s.backBtn} onClick={() => { setConfirmDeleteTaskId(null); setScreen(SCREENS.MAINTENANCE_SCHEDULE); }}>← BACK</button><div style={{ ...s.logo, fontSize: 17 }}>ADD TASK</div></div>
         <div style={s.content}>
           <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1, marginBottom: 16 }}>NEW MAINTENANCE TASK</div>
 
@@ -2989,7 +3043,7 @@ export default function ShopGuard() {
                 lastDoneTs: null, assignedTo: newMaintenance.assignedTo, status: "overdue"
               }]);
               setMaintenanceAdded(true);
-              setTimeout(() => { setMaintenanceAdded(false); setNewMaintenance({ machineId: "", task: "", intervalDays: "30", assignedTo: "" }); setScreen(SCREENS.MAINTENANCE_SCHEDULE); }, 1800);
+              setTimeout(() => { setMaintenanceAdded(false); setNewMaintenance({ machineId: "", task: "", intervalDays: "30", assignedTo: "" }); setConfirmDeleteTaskId(null); setScreen(SCREENS.MAINTENANCE_SCHEDULE); }, 1800);
             }}>
             ✓ ADD TASK
           </button>
@@ -3004,34 +3058,114 @@ export default function ShopGuard() {
     const upcomingItems = maintenanceItems.filter(i => maintenanceDueStatus(i) === "upcoming");
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.MACHINES)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.header}><button style={s.backBtn} onClick={() => { setConfirmDeleteTaskId(null); setScreen(SCREENS.MACHINES); }}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
         <div style={s.content}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1 }}>MAINTENANCE</div>
-            {isSupervisor() && <button onClick={() => setScreen(SCREENS.MAINTENANCE_NEW)} style={{ background: "#ff6b00", color: "#000", border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>+ ADD TASK</button>}
+            {isSupervisor() && <button onClick={() => { setConfirmDeleteTaskId(null); setScreen(SCREENS.MAINTENANCE_NEW); }} style={{ background: "#ff6b00", color: "#000", border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>+ ADD TASK</button>}
           </div>
 
           {overdueItems.length > 0 && <div style={s.alertBanner("red")}>🔧 {overdueItems.length} maintenance task{overdueItems.length > 1 ? "s" : ""} overdue</div>}
           {upcomingItems.length > 0 && <div style={s.alertBanner("orange")}>⚠ {upcomingItems.length} task{upcomingItems.length > 1 ? "s" : ""} due within 7 days</div>}
 
+          {maintenanceItems.length === 0 && (
+            <div style={{ color: "#888", textAlign: "center", padding: "40px 0", fontSize: 13, letterSpacing: 1 }}>
+              NO MAINTENANCE TASKS SCHEDULED
+            </div>
+          )}
+
           {maintenanceItems.map(item => {
             const status = maintenanceDueStatus(item);
             const dueText = maintenanceDueText(item);
             const color = status === "overdue" ? "#e74c3c" : status === "upcoming" ? "#f39c12" : "#2ecc71";
+            const isConfirming = confirmDeleteTaskId === item.id;
+            const isDeleting = deletingTaskId === item.id;
             return (
               <div key={item.id} style={{ background: "#161a23", border: `1px solid #2a2e3a`, borderLeft: `4px solid ${color}`, padding: "14px 16px", marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-                  <div style={{ fontSize: 15, fontWeight: 800, flex: 1, marginRight: 10 }}>{item.task}</div>
-                  <span style={{ ...s.badge(status === "overdue" ? "red" : status === "upcoming" ? "yellow" : "green"), marginBottom: 0, flexShrink: 0 }}>{dueText}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontSize: 15, fontWeight: 800, flex: 1 }}>{item.task}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    <span style={{ ...s.badge(status === "overdue" ? "red" : status === "upcoming" ? "yellow" : "green"), marginBottom: 0 }}>{dueText}</span>
+                    {isSupervisor() && (
+                      <button
+                        style={{
+                          background: isConfirming ? "#3a1a1a" : "transparent",
+                          border: "1px solid #e74c3c",
+                          color: "#e74c3c",
+                          padding: "2px 8px",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          letterSpacing: 0.5,
+                          opacity: isDeleting ? 0.5 : 1,
+                        }}
+                        disabled={isDeleting}
+                        onClick={() => setConfirmDeleteTaskId(isConfirming ? null : item.id)}
+                        title="Permanently delete task"
+                        aria-label={`Delete task ${item.task}`}
+                      >
+                        DELETE
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>{item.machineName}</div>
                 {item.assignedTo && <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>Assigned to {item.assignedTo}</div>}
                 <div style={{ fontSize: 11, color: "#555" }}>Every {item.intervalDays} days · Last done: {item.lastDoneTs ? timeAgo(item.lastDoneTs) : "Never"}</div>
-                {isMaintenance() && (
-                  <button style={{ ...s.primaryBtn, background: "#0f2a1a", border: "1px solid #2ecc71", color: "#2ecc71", padding: "8px 0", fontSize: 12, marginTop: 10 }}
-                    onClick={() => setMaintenanceItems(prev => prev.map(i => i.id === item.id ? { ...i, lastDoneTs: Date.now(), status: "ok" } : i))}>
-                    ✓ MARK COMPLETE
-                  </button>
+
+                {isConfirming ? (
+                  <div style={{ background: "#1a0a0a", border: "2px solid #e74c3c", padding: 14, marginTop: 12 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#e74c3c", marginBottom: 6 }}>
+                      Permanently delete task?
+                    </div>
+                    <div style={{ fontSize: 12, color: "#aaa", marginBottom: 14 }}>
+                      "{item.task}" ({item.machineName}). This cannot be undone.
+                    </div>
+                    <button
+                      style={{
+                        ...s.dangerBtn,
+                        fontSize: 13,
+                        padding: "10px 0",
+                        marginBottom: 8,
+                        opacity: isDeleting ? 0.6 : 1,
+                      }}
+                      disabled={isDeleting}
+                      onClick={() => handleDeleteMaintenanceTask(item)}
+                    >
+                      {isDeleting ? "DELETING..." : "YES — PERMANENTLY DELETE"}
+                    </button>
+                    <button
+                      style={{ ...s.backBtn, width: "100%", padding: 10 }}
+                      disabled={isDeleting}
+                      onClick={() => setConfirmDeleteTaskId(null)}
+                    >
+                      CANCEL
+                    </button>
+                  </div>
+                ) : (
+                  isMaintenance() && (
+                    <button
+                      style={{
+                        ...s.primaryBtn,
+                        background: "#0f2a1a",
+                        border: "1px solid #2ecc71",
+                        color: "#2ecc71",
+                        padding: "8px 0",
+                        fontSize: 12,
+                        marginTop: 10,
+                      }}
+                      onClick={() =>
+                        setMaintenanceItems(prev =>
+                          prev.map(i =>
+                            i.id === item.id ? { ...i, lastDoneTs: Date.now(), status: "ok" } : i
+                          )
+                        )
+                      }
+                    >
+                      ✓ MARK COMPLETE
+                    </button>
+                  )
                 )}
               </div>
             );
