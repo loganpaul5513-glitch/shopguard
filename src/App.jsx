@@ -502,6 +502,9 @@ export default function ShopGuard() {
   const [inspectChecks, setInspectChecks] = useState([]);
   const [inspectNotes, setInspectNotes] = useState("");
   const [inspectDone, setInspectDone] = useState(false);
+  const [inspectLoggedInfo, setInspectLoggedInfo] = useState(null);
+  const [machineSearch, setMachineSearch] = useState("");
+  const [teamSearch, setTeamSearch] = useState("");
   const [reviewAction, setReviewAction] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectInput, setShowRejectInput] = useState(false);
@@ -662,6 +665,7 @@ export default function ShopGuard() {
     setInspectChecks(machine.inspectionChecklist.map(i => ({ ...i, checked: false })));
     setInspectNotes("");
     setInspectDone(false);
+    setInspectLoggedInfo(null);
     setScreen(SCREENS.MACHINE_INSPECT);
   }
 
@@ -692,6 +696,11 @@ export default function ShopGuard() {
 
     const ts = Date.now();
     setMachines(prev => prev.map(m => m.id === machine.id ? { ...m, lastInspectedTs: ts, inspectionLog: [{ by: currentUser.name, ts, notes: inspectNotes, passed }, ...m.inspectionLog] } : m));
+    setInspectLoggedInfo({
+      machineName: machine.name,
+      signedBy: currentUser.name,
+      timestamp: ts,
+    });
     setInspectDone(true);
   }
 
@@ -1275,6 +1284,9 @@ export default function ShopGuard() {
 
   // ── TEAM MANAGEMENT ──
   if (screen === SCREENS.TEAM) {
+    const filteredTeam = team.filter(member =>
+      member.name.toLowerCase().includes(teamSearch.toLowerCase().trim())
+    );
     return (
       <div style={s.app}>
         <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.DASHBOARD)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
@@ -1283,23 +1295,81 @@ export default function ShopGuard() {
             <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1 }}>TEAM MANAGEMENT</div>
             {isSupervisor() && <button onClick={() => setScreen(SCREENS.TEAM_ADD)} style={{ background: "#ff6b00", color: "#000", border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>+ ADD</button>}
           </div>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 20, letterSpacing: 1 }}>{teamLoading ? "LOADING..." : `${team.length} MEMBERS · TAP TO MANAGE`}</div>
-          {team.map(member => (
-            <div key={member.id} style={{ ...s.machineCard, borderLeft: `4px solid ${member.active ? ROLE_COLORS[member.role] : "#333"}`, opacity: member.active ? 1 : 0.5 }}
-              onClick={() => { setSelectedMemberId(member.id); setScreen(SCREENS.TEAM_MEMBER); }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ ...s.avatar(member.role), opacity: member.active ? 1 : 0.5 }}>{member.avatar}</div>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: member.active ? "#e8e8e0" : "#555" }}>{member.name}</div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
-                    <span style={s.roleTag(member.role)}>{member.role}</span>
-                    {!member.active && <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 2, color: "#e74c3c", border: "1px solid #e74c3c", padding: "2px 6px" }}>INACTIVE</span>}
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 12, letterSpacing: 1 }}>{teamLoading ? "LOADING..." : `${team.length} MEMBERS · TAP TO MANAGE`}</div>
+
+          <div style={{ position: "relative", marginBottom: 16 }}>
+            <input
+              style={{
+                ...s.input,
+                marginBottom: 0,
+                paddingLeft: 38,
+                paddingRight: teamSearch ? 36 : 14,
+                background: "#161a23",
+                border: "1px solid #2a2e3a",
+              }}
+              placeholder="Search employees by name..."
+              value={teamSearch}
+              onChange={e => setTeamSearch(e.target.value)}
+            />
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#666", pointerEvents: "none" }}>🔍</span>
+            {teamSearch && (
+              <button
+                type="button"
+                onClick={() => setTeamSearch("")}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  color: "#888",
+                  fontSize: 16,
+                  cursor: "pointer",
+                  padding: "4px 8px",
+                  lineHeight: 1,
+                  fontFamily: "inherit",
+                }}
+                title="Clear search"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {filteredTeam.length === 0 ? (
+            <div style={{ background: "#161a23", border: "2px dashed #2a2e3a", padding: 32, textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: "#888" }}>
+                {teamSearch ? `No employees found matching "${teamSearch}".` : "No team members found."}
+              </div>
+              {teamSearch && (
+                <button
+                  type="button"
+                  onClick={() => setTeamSearch("")}
+                  style={{ marginTop: 10, background: "transparent", border: "1px solid #ff6b00", color: "#ff6b00", padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  CLEAR SEARCH
+                </button>
+              )}
+            </div>
+          ) : (
+            filteredTeam.map(member => (
+              <div key={member.id} style={{ ...s.machineCard, borderLeft: `4px solid ${member.active ? ROLE_COLORS[member.role] : "#333"}`, opacity: member.active ? 1 : 0.5 }}
+                onClick={() => { setSelectedMemberId(member.id); setScreen(SCREENS.TEAM_MEMBER); }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ ...s.avatar(member.role), opacity: member.active ? 1 : 0.5 }}>{member.avatar}</div>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: member.active ? "#e8e8e0" : "#555" }}>{member.name}</div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                      <span style={s.roleTag(member.role)}>{member.role}</span>
+                      {!member.active && <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 2, color: "#e74c3c", border: "1px solid #e74c3c", padding: "2px 6px" }}>INACTIVE</span>}
+                    </div>
                   </div>
                 </div>
+                <div style={{ fontSize: 12, color: "#555" }}>›</div>
               </div>
-              <div style={{ fontSize: 12, color: "#555" }}>›</div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
     );
@@ -1714,18 +1784,80 @@ export default function ShopGuard() {
     if (!m) return null;
     const allChecked = inspectChecks.every(i => i.checked);
     const checkedCount = inspectChecks.filter(i => i.checked).length;
-    if (inspectDone) return (
-      <div style={s.app}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 24 }}>
-          <div style={{ fontSize: 72, marginBottom: 16 }}>✓</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#2ecc71", letterSpacing: 2, marginBottom: 8 }}>INSPECTION LOGGED</div>
-          <div style={{ fontSize: 14, color: "#888", marginBottom: 4 }}>{m.name}</div>
-          <div style={{ fontSize: 13, color: "#555", marginBottom: 32 }}>Signed by {currentUser?.name} · Just now</div>
-          <div style={{ background: "#0f2a1a", border: "1px solid #2ecc71", padding: "12px 20px", fontSize: 13, color: "#2ecc71", marginBottom: 24, textAlign: "center" }}>✓ "Last Inspected" updated to: Just now</div>
-          <button style={{ ...s.primaryBtn, width: 220 }} onClick={() => setScreen(SCREENS.MACHINE_DETAIL)}>← BACK TO MACHINE</button>
+    if (inspectDone) {
+      const info = inspectLoggedInfo || {
+        machineName: m.name,
+        signedBy: currentUser?.name || "Worker",
+        timestamp: Date.now(),
+      };
+      const formattedDate = new Date(info.timestamp).toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      const formattedTime = new Date(info.timestamp).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+
+      return (
+        <div style={s.app}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 24, textAlign: "center" }}>
+            <div style={{ fontSize: 64, color: "#2ecc71", marginBottom: 12, lineHeight: 1 }}>✓</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: "#2ecc71", letterSpacing: 2, marginBottom: 8 }}>
+              INSPECTION LOGGED SUCCESSFULLY
+            </div>
+            <div style={{ fontSize: 13, color: "#888", marginBottom: 24 }}>
+              The daily safety inspection has been recorded.
+            </div>
+
+            <div style={{ background: "#161a23", border: "1px solid #2a2e3a", borderLeft: "4px solid #2ecc71", padding: "16px 20px", width: "100%", maxWidth: 360, textAlign: "left", marginBottom: 24, boxSizing: "border-box" }}>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 10, letterSpacing: 2, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>Machine</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#e8e8e0" }}>{info.machineName}</div>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 10, letterSpacing: 2, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>Signed By</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#e8e8e0" }}>{info.signedBy}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, letterSpacing: 2, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>Date & Time</div>
+                <div style={{ fontSize: 13, color: "#aaa" }}>{formattedDate} at {formattedTime}</div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", maxWidth: 360 }}>
+              <button
+                style={{ ...s.primaryBtn, width: "100%", margin: 0 }}
+                onClick={() => {
+                  setInspectDone(false);
+                  setScreen(SCREENS.MACHINE_DETAIL);
+                }}
+              >
+                ← BACK TO MACHINE
+              </button>
+              <button
+                style={{
+                  ...s.primaryBtn,
+                  width: "100%",
+                  margin: 0,
+                  background: "#161a23",
+                  border: "1px solid #2a2e3a",
+                  color: "#e8e8e0",
+                }}
+                onClick={() => {
+                  setInspectDone(false);
+                  setScreen(SCREENS.DASHBOARD);
+                }}
+              >
+                ⌂ BACK TO DASHBOARD
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
     return (
       <div style={s.app}>
         <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.MACHINE_DETAIL)}>← BACK</button><div style={{ ...s.logo, fontSize: 17 }}>INSPECTION</div></div>
@@ -2089,6 +2221,9 @@ export default function ShopGuard() {
 
   // ── MACHINES LIST ──
   if (screen === SCREENS.MACHINES) {
+    const filteredMachines = machines.filter(m =>
+      m.name.toLowerCase().includes(machineSearch.toLowerCase().trim())
+    );
     return (
       <div style={s.app}>
         <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.DASHBOARD)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
@@ -2100,26 +2235,84 @@ export default function ShopGuard() {
               {isSupervisor() && <button onClick={() => setScreen(SCREENS.MACHINE_ADD)} style={{ background: "#ff6b00", color: "#000", border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>+ ADD</button>}
             </div>
           </div>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 16, letterSpacing: 1 }}>TAP TO INSPECT OR VIEW DOCUMENTS</div>
-          {machines.map(m => {
-            const st = inspectionStatus(m.lastInspectedTs);
-            const locked = m.activeLocks.length > 0;
-            return (
-              <div key={m.id} style={s.machineCard} onClick={() => { setSelectedMachineId(m.id); setScreen(SCREENS.MACHINE_DETAIL); }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 700 }}>{m.name}</div>
-                  <div style={{ fontSize: 11, color: locked ? "#e74c3c" : st === "ok" ? "#2ecc71" : st === "warning" ? "#f39c12" : "#e74c3c", marginTop: 3, fontWeight: 700 }}>
-                    {locked ? `🔒 LOCKED OUT (${m.activeLocks.length})` : timeAgo(m.lastInspectedTs)}
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 12, letterSpacing: 1 }}>TAP TO INSPECT OR VIEW DOCUMENTS</div>
+
+          <div style={{ position: "relative", marginBottom: 16 }}>
+            <input
+              style={{
+                ...s.input,
+                marginBottom: 0,
+                paddingLeft: 38,
+                paddingRight: machineSearch ? 36 : 14,
+                background: "#161a23",
+                border: "1px solid #2a2e3a",
+              }}
+              placeholder="Search machines by name..."
+              value={machineSearch}
+              onChange={e => setMachineSearch(e.target.value)}
+            />
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#666", pointerEvents: "none" }}>🔍</span>
+            {machineSearch && (
+              <button
+                type="button"
+                onClick={() => setMachineSearch("")}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  color: "#888",
+                  fontSize: 16,
+                  cursor: "pointer",
+                  padding: "4px 8px",
+                  lineHeight: 1,
+                  fontFamily: "inherit",
+                }}
+                title="Clear search"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {filteredMachines.length === 0 ? (
+            <div style={{ background: "#161a23", border: "2px dashed #2a2e3a", padding: 32, textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: "#888" }}>
+                {machineSearch ? `No machines found matching "${machineSearch}".` : "No machines added yet."}
+              </div>
+              {machineSearch && (
+                <button
+                  type="button"
+                  onClick={() => setMachineSearch("")}
+                  style={{ marginTop: 10, background: "transparent", border: "1px solid #ff6b00", color: "#ff6b00", padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  CLEAR SEARCH
+                </button>
+              )}
+            </div>
+          ) : (
+            filteredMachines.map(m => {
+              const st = inspectionStatus(m.lastInspectedTs);
+              const locked = m.activeLocks.length > 0;
+              return (
+                <div key={m.id} style={s.machineCard} onClick={() => { setSelectedMachineId(m.id); setScreen(SCREENS.MACHINE_DETAIL); }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700 }}>{m.name}</div>
+                    <div style={{ fontSize: 11, color: locked ? "#e74c3c" : st === "ok" ? "#2ecc71" : st === "warning" ? "#f39c12" : "#e74c3c", marginTop: 3, fontWeight: 700 }}>
+                      {locked ? `🔒 LOCKED OUT (${m.activeLocks.length})` : timeAgo(m.lastInspectedTs)}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {m.pendingSop && <span style={{ fontSize: 10, color: "#a070ff", fontWeight: 700 }}>PENDING</span>}
+                    {!m.sop && <span style={{ fontSize: 10, color: "#e74c3c", fontWeight: 700 }}>NO SOP</span>}
+                    <div style={s.statusDot(locked ? "critical" : st)}></div>
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {m.pendingSop && <span style={{ fontSize: 10, color: "#a070ff", fontWeight: 700 }}>PENDING</span>}
-                  {!m.sop && <span style={{ fontSize: 10, color: "#e74c3c", fontWeight: 700 }}>NO SOP</span>}
-                  <div style={s.statusDot(locked ? "critical" : st)}></div>
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
       </div>
     );
@@ -2354,7 +2547,7 @@ export default function ShopGuard() {
   if (screen === SCREENS.SAFETY_MEETINGS) {
     return (
       <div style={s.app}>
-        <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.TRAINING)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
+        <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.DASHBOARD)}>← BACK</button><div style={{ ...s.logo, display: "flex", alignItems: "center" }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={22} /></div></div>
         <div style={s.content}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1 }}>SAFETY MEETINGS</div>
@@ -2610,10 +2803,11 @@ export default function ShopGuard() {
         <div style={s.content}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1 }}>TRAINING RECORDS</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => setScreen(SCREENS.SAFETY_MEETINGS)} style={{ background: "#161a23", color: "#2ecc71", border: "1px solid #2ecc71", padding: "8px 12px", fontSize: 11, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>MEETINGS</button>
-              {isSupervisor() && <button onClick={() => setScreen(SCREENS.TRAINING_MANAGE)} style={{ background: "#161a23", color: "#ff6b00", border: "1px solid #ff6b00", padding: "8px 12px", fontSize: 11, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>MANAGE</button>}
-            </div>
+            {isSupervisor() && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setScreen(SCREENS.TRAINING_MANAGE)} style={{ background: "#161a23", color: "#ff6b00", border: "1px solid #ff6b00", padding: "8px 12px", fontSize: 11, fontWeight: 800, letterSpacing: 1, cursor: "pointer", fontFamily: "inherit" }}>MANAGE</button>
+              </div>
+            )}
           </div>
 
           {isSupervisor() && missingCount > 0 && <div style={s.alertBanner("orange")}>⚠ {missingCount} employee{missingCount > 1 ? "s" : ""} missing required training</div>}
@@ -2754,7 +2948,7 @@ export default function ShopGuard() {
         <div style={s.statRow}>
           <div style={s.stat}><div style={s.statNum}>{machines.length}</div><div style={s.statLabel}>Machines</div></div>
           {isSupervisor()
-            ? <div style={s.stat} onClick={() => setScreen(SCREENS.INCIDENTS)} style={{...s.stat, cursor:"pointer"}}><div style={{ ...s.statNum, color: openIncidents() > 0 ? "#e74c3c" : "#2ecc71" }}>{openIncidents()}</div><div style={s.statLabel}>Incidents</div></div>
+            ? <div style={{ ...s.stat, cursor: "pointer" }} onClick={() => setScreen(SCREENS.INCIDENTS)}><div style={{ ...s.statNum, color: openIncidents() > 0 ? "#e74c3c" : "#2ecc71" }}>{openIncidents()}</div><div style={s.statLabel}>Incidents</div></div>
             : (() => {
                 const myTasks = incidents.filter(i => i.correctiveAction && !i.correctiveAction.completed && i.correctiveAction.assignedTo === currentUser?.name);
                 return (
@@ -2784,6 +2978,7 @@ export default function ShopGuard() {
         {isSupervisor() && <button style={s.bigBtn} onClick={() => setScreen(SCREENS.TEAM)}><span style={s.bigBtnIcon}>👥</span><div><div style={s.bigBtnLabel}>Team Management</div><div style={s.bigBtnSub}>{team.length} members · assign roles</div></div></button>}
         {isSupervisor() && <button style={s.bigBtn} onClick={() => { setSafetyEmailInput(company?.safety_email || ""); setSafetyEmailError(""); setSafetyEmailSaved(false); setScreen(SCREENS.SUPERVISOR_SETTINGS); }}><span style={s.bigBtnIcon}>⚙️</span><div><div style={s.bigBtnLabel}>Supervisor Settings</div><div style={s.bigBtnSub}>{company?.safety_email ? "Safety email configured" : "Set safety contact email"}</div></div></button>}
         <button style={s.bigBtn} onClick={() => setScreen(SCREENS.TRAINING)}><span style={s.bigBtnIcon}>🎓</span><div><div style={s.bigBtnLabel}>Training Records</div><div style={s.bigBtnSub}>Certs, expirations, missing training</div></div></button>
+        <button style={s.bigBtn} onClick={() => setScreen(SCREENS.SAFETY_MEETINGS)}><span style={s.bigBtnIcon}>🗣️</span><div><div style={s.bigBtnLabel}>Safety Meetings</div><div style={s.bigBtnSub}>{safetyMeetings.length > 0 ? `${safetyMeetings.length} logged · topics & attendance` : "Log meetings, topics, attendance"}</div></div></button>
         {isSupervisor() && pendingCount() > 0 && <button style={{ ...s.bigBtn, borderLeft: "4px solid #a070ff" }} onClick={() => setScreen(SCREENS.PENDING_SOPS)}><span style={s.bigBtnIcon}>📋</span><div><div style={{ ...s.bigBtnLabel, color: "#a070ff" }}>Review SOPs</div><div style={s.bigBtnSub}>{pendingCount()} draft{pendingCount() > 1 ? "s" : ""} from workers</div></div></button>}
         {isSupervisor() && <button style={{ ...s.bigBtn, borderLeft: "4px solid #e74c3c" }} onClick={() => setScreen(SCREENS.OSHA_PANIC)}><span style={s.bigBtnIcon}>📤</span><div><div style={{ ...s.bigBtnLabel, color: "#e74c3c" }}>OSHA Panic Mode</div><div style={s.bigBtnSub}>Export all records instantly</div></div></button>}
       </div>
