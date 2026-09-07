@@ -2506,6 +2506,7 @@ export default function ShopGuard() {
         </div>
       </div>
     );
+    const activeTeam = team.filter(m => m.active !== false);
     return (
       <div style={s.app}>
         <div style={s.header}><button style={s.backBtn} onClick={() => setScreen(SCREENS.SAFETY_MEETINGS)}>← BACK</button><div style={{ ...s.logo, fontSize: 17 }}>NEW MEETING</div></div>
@@ -2516,8 +2517,44 @@ export default function ShopGuard() {
           <input style={s.input} placeholder="e.g. Monthly LOTO Refresher" value={newMeeting.topic} onChange={e => setNewMeeting(p => ({ ...p, topic: e.target.value }))} />
 
           <label style={s.formLabel}>Attendees</label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button
+              type="button"
+              onClick={() => setNewMeeting(p => ({ ...p, attendees: [...new Set(activeTeam.map(m => m.name))] }))}
+              style={{
+                flex: 1,
+                background: "#161a23",
+                border: "1px solid #2ecc71",
+                color: "#2ecc71",
+                padding: "8px 12px",
+                fontSize: 12,
+                fontWeight: 800,
+                letterSpacing: 1,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}>
+              Select All
+            </button>
+            <button
+              type="button"
+              onClick={() => setNewMeeting(p => ({ ...p, attendees: [] }))}
+              style={{
+                flex: 1,
+                background: "#161a23",
+                border: "1px solid #2a2e3a",
+                color: "#888",
+                padding: "8px 12px",
+                fontSize: 12,
+                fontWeight: 800,
+                letterSpacing: 1,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}>
+              Deselect All
+            </button>
+          </div>
           <div style={{ marginBottom: 12 }}>
-            {team.map(member => {
+            {activeTeam.map(member => {
               const attending = newMeeting.attendees.includes(member.name);
               return (
                 <div key={member.id} onClick={() => setNewMeeting(p => ({ ...p, attendees: attending ? p.attendees.filter(a => a !== member.name) : [...p.attendees, member.name] }))}
