@@ -9,6 +9,8 @@ const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes of inactivity
 
 const SCREENS = {
   COMPANY_CODE: "company_code",
+  SIGNUP: "signup",
+  SIGNUP_CONFIRM: "signup_confirm",
   PIN_SETUP: "pin_setup",
   PIN_VERIFY: "pin_verify",
   LOGIN: "login",
@@ -81,6 +83,21 @@ function inspectionStatus(ts) {
 async function hashPin(pin) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function generateUniqueCompanyCode() {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const digits = String(Math.floor(1000 + Math.random() * 9000));
+    const code = `AMS-${digits}`;
+    const { data, error } = await supabase
+      .from("companies")
+      .select("id")
+      .ilike("company_code", code)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return code;
+  }
+  throw new Error("Could not generate a unique company code. Please try again.");
 }
 
 async function validateCompanyCode(code) {
@@ -499,6 +516,16 @@ export default function ShopGuard() {
   const [companyCodeInput, setCompanyCodeInput] = useState("");
   const [companyCodeError, setCompanyCodeError] = useState("");
   const [companyCodeLoading, setCompanyCodeLoading] = useState(false);
+  const [signupForm, setSignupForm] = useState({
+    companyName: "",
+    supervisorName: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+  });
+  const [signupError, setSignupError] = useState("");
+  const [signupLoading, setSignupLoading] = useState(false);
+  const [signupCompanyCode, setSignupCompanyCode] = useState("");
   const [pendingLoginUser, setPendingLoginUser] = useState(null);
   const [pinInput, setPinInput] = useState("");
   const [pinConfirm, setPinConfirm] = useState("");
@@ -1493,6 +1520,111 @@ export default function ShopGuard() {
     setScreen(SCREENS.LOGIN);
   }
 
+  function resetSignupForm() {
+    setSignupForm({
+      companyName: "",
+      supervisorName: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+    });
+    setSignupError("");
+    setSignupLoading(false);
+  }
+
+  async function handleSignupSubmit() {
+    setSignupError("");
+    const companyName = signupForm.companyName.trim();
+    const supervisorName = signupForm.supervisorName.trim();
+    const email = signupForm.email.trim();
+    const password = signupForm.password;
+    const confirmPassword = signupForm.confirmPassword;
+
+    if (!companyName) {
+      setSignupError("Please enter your company name.");
+      return;
+    }
+    if (!supervisorName) {
+      setSignupError("Please enter the supervisor's full name.");
+      return;
+    }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setSignupError("Please enter a valid email address.");
+      return;
+    }
+    if (password.length < 6) {
+      setSignupError("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setSignupError("Passwords do not match. Try again.");
+      return;
+    }
+
+    setSignupLoading(true);
+    try {
+      const companyCode = await generateUniqueCompanyCode();
+      const hashedPassword = await hashPin(password);
+
+      const { data: companyRow, error: companyError } = await supabase
+        .from("companies")
+        .insert({
+          name: companyName,
+          company_code: companyCode,
+          email,
+          password: hashedPassword,
+          active: true,
+        })
+        .select("id, name, company_code, safety_email")
+        .single();
+
+      if (companyError || !companyRow) {
+        console.error("Failed to create company:", companyError);
+        setSignupError("Could not create company. Please try again.");
+        setSignupLoading(false);
+        return;
+      }
+
+      const { error: employeeError } = await supabase
+        .from("employees")
+        .insert({
+          company_id: companyRow.id,
+          company_code: companyRow.company_code,
+          name: supervisorName,
+          role: ROLES.SUPERVISOR,
+          active: true,
+        });
+
+      if (employeeError) {
+        console.error("Failed to create supervisor:", employeeError);
+        setSignupError("Company created, but supervisor setup failed. Contact support with your code: " + companyRow.company_code);
+        setSignupCompanyCode(companyRow.company_code);
+        setCompany(companyRow);
+        localStorage.setItem(STORAGE_KEY_COMPANY_CODE, companyRow.company_code);
+        setSignupLoading(false);
+        setScreen(SCREENS.SIGNUP_CONFIRM);
+        return;
+      }
+
+      setCompany(companyRow);
+      localStorage.setItem(STORAGE_KEY_COMPANY_CODE, companyRow.company_code);
+      setSignupCompanyCode(companyRow.company_code);
+      resetSignupForm();
+      setSignupLoading(false);
+      setScreen(SCREENS.SIGNUP_CONFIRM);
+    } catch (err) {
+      console.error("Signup failed:", err);
+      setSignupError(err.message || "Signup failed. Please try again.");
+      setSignupLoading(false);
+    }
+  }
+
+  function continueAfterSignup() {
+    setSignupCompanyCode("");
+    setSessionExpired(false);
+    setScreen(SCREENS.LOGIN);
+  }
+
   function selectEmployeeForLogin(user) {
     setPendingLoginUser(user);
     setPinInput("");
@@ -1604,6 +1736,8 @@ export default function ShopGuard() {
     // 5. The timeout should only apply when someone is logged in, not on the login or company code screens
     const isLoggedIn = Boolean(currentUser) &&
       screen !== SCREENS.COMPANY_CODE &&
+      screen !== SCREENS.SIGNUP &&
+      screen !== SCREENS.SIGNUP_CONFIRM &&
       screen !== SCREENS.LOGIN &&
       screen !== SCREENS.PIN_SETUP &&
       screen !== SCREENS.PIN_VERIFY;
@@ -1736,7 +1870,7 @@ export default function ShopGuard() {
           <div style={{ fontSize: 13, color: "#888", marginBottom: 20, lineHeight: 1.5 }}>Your supervisor will provide a code to link this device to your shop.</div>
           <input
             style={s.input}
-            placeholder="e.g. ACME-2024"
+            placeholder="e.g. AMS-4821"
             value={companyCodeInput}
             onChange={e => { setCompanyCodeInput(e.target.value); setCompanyCodeError(""); }}
             onKeyDown={e => e.key === "Enter" && handleCompanyCodeSubmit()}
@@ -1749,6 +1883,143 @@ export default function ShopGuard() {
             onClick={handleCompanyCodeSubmit}
           >
             {companyCodeLoading ? "VERIFYING..." : "CONTINUE"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { resetSignupForm(); setScreen(SCREENS.SIGNUP); }}
+            style={{
+              display: "block",
+              width: "100%",
+              marginTop: 28,
+              background: "none",
+              border: "none",
+              color: "#888",
+              fontSize: 14,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              letterSpacing: 0.3,
+              padding: 0,
+            }}
+          >
+            New company? <span style={{ color: "#ff6b00", fontWeight: 700 }}>Sign up here</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── SIGNUP ──
+  if (screen === SCREENS.SIGNUP) {
+    return (
+      <div style={s.app}>
+        <div style={{ padding: 24, paddingTop: 48 }}>
+          <button
+            style={{ ...s.backBtn, marginBottom: 24 }}
+            onClick={() => { resetSignupForm(); setScreen(SCREENS.COMPANY_CODE); }}
+          >
+            ← BACK
+          </button>
+          <div style={{ marginBottom: 28, textAlign: "center" }}>
+            <div style={{ ...s.logo, fontSize: 32, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={32} /></div>
+            <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>NEW COMPANY SETUP</div>
+          </div>
+          <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Create your company</div>
+          <div style={{ fontSize: 13, color: "#888", marginBottom: 20, lineHeight: 1.5 }}>
+            Set up ShopGuard for your shop. You will get a company code to share with your crew.
+          </div>
+
+          <label style={s.formLabel}>Company name</label>
+          <input
+            style={s.input}
+            placeholder="e.g. Apex Metal Works"
+            value={signupForm.companyName}
+            onChange={e => { setSignupForm(p => ({ ...p, companyName: e.target.value })); setSignupError(""); }}
+            autoFocus
+          />
+
+          <label style={s.formLabel}>Supervisor full name</label>
+          <input
+            style={s.input}
+            placeholder="e.g. Jordan Lee"
+            value={signupForm.supervisorName}
+            onChange={e => { setSignupForm(p => ({ ...p, supervisorName: e.target.value })); setSignupError(""); }}
+          />
+
+          <label style={s.formLabel}>Email address</label>
+          <input
+            style={s.input}
+            type="email"
+            autoComplete="email"
+            placeholder="you@company.com"
+            value={signupForm.email}
+            onChange={e => { setSignupForm(p => ({ ...p, email: e.target.value })); setSignupError(""); }}
+          />
+
+          <label style={s.formLabel}>Password</label>
+          <input
+            style={s.input}
+            type="password"
+            autoComplete="new-password"
+            placeholder="••••••••"
+            value={signupForm.password}
+            onChange={e => { setSignupForm(p => ({ ...p, password: e.target.value })); setSignupError(""); }}
+          />
+
+          <label style={s.formLabel}>Confirm password</label>
+          <input
+            style={s.input}
+            type="password"
+            autoComplete="new-password"
+            placeholder="••••••••"
+            value={signupForm.confirmPassword}
+            onChange={e => { setSignupForm(p => ({ ...p, confirmPassword: e.target.value })); setSignupError(""); }}
+            onKeyDown={e => e.key === "Enter" && handleSignupSubmit()}
+          />
+
+          {signupError && <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 12 }}>{signupError}</div>}
+          <button
+            style={{ ...s.primaryBtn, opacity: signupLoading ? 0.6 : 1 }}
+            disabled={signupLoading}
+            onClick={handleSignupSubmit}
+          >
+            {signupLoading ? "CREATING..." : "CREATE COMPANY"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── SIGNUP CONFIRM ──
+  if (screen === SCREENS.SIGNUP_CONFIRM) {
+    return (
+      <div style={s.app}>
+        <div style={{ padding: 24, paddingTop: 48 }}>
+          <div style={{ marginBottom: 28, textAlign: "center" }}>
+            <div style={{ ...s.logo, fontSize: 32, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={32} /></div>
+            <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>SETUP COMPLETE</div>
+          </div>
+          <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Your company code</div>
+          <div style={{ fontSize: 13, color: "#888", marginBottom: 20, lineHeight: 1.5 }}>
+            Share this code with your employees so they can link their devices to your shop.
+          </div>
+          <div style={{
+            background: "#161a23",
+            border: "2px solid #ff6b00",
+            padding: "28px 16px",
+            textAlign: "center",
+            marginBottom: 20,
+          }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#888", textTransform: "uppercase", marginBottom: 10 }}>Company code</div>
+            <div style={{ fontSize: 36, fontWeight: 800, letterSpacing: 4, color: "#ff6b00" }}>{signupCompanyCode || company?.company_code}</div>
+            {company?.name && (
+              <div style={{ fontSize: 14, color: "#e8e8e0", marginTop: 12, letterSpacing: 1 }}>{company.name}</div>
+            )}
+          </div>
+          <div style={{ ...s.alertBanner("orange"), marginBottom: 20, lineHeight: 1.4 }}>
+            Write this code down. Employees will need it on the company code screen.
+          </div>
+          <button style={s.primaryBtn} onClick={continueAfterSignup}>
+            CONTINUE TO LOGIN
           </button>
         </div>
       </div>
