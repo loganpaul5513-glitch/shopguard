@@ -3,6 +3,7 @@ import { supabase, setSupabaseCompanyId } from './supabase'
 import { applyCompanyIdFilter, fetchCompanyRecordIds } from './companyIds'
 import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './photoStorage'
 import { exportAndEmailOshaRecords } from './oshaExport'
+import { sendWelcomeEmail } from './welcomeEmail'
 
 const STORAGE_KEY_COMPANY_CODE = "shopguard_company_code";
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes of inactivity
@@ -1614,6 +1615,17 @@ export default function ShopGuard() {
         setSignupLoading(false);
         setScreen(SCREENS.SIGNUP_CONFIRM);
         return;
+      }
+
+      try {
+        await sendWelcomeEmail({
+          to: email,
+          companyName: companyRow.name,
+          companyCode: companyRow.company_code,
+          supervisorName,
+        });
+      } catch (emailErr) {
+        console.error("Failed to send welcome email:", emailErr);
       }
 
       setCompany(companyRow);
