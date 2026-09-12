@@ -103,14 +103,18 @@ async function generateUniqueCompanyCode() {
 async function validateCompanyCode(code) {
   const trimmed = code.trim();
   if (!trimmed) return null;
-  const { data, error } = await supabase
-    .from("companies")
-    .select("id, name, company_code, safety_email")
-    .ilike("company_code", trimmed)
-    .eq("active", true)
-    .maybeSingle();
+  const { data, error } = await supabase.rpc("lookup_company_by_code", {
+    p_code: trimmed,
+  });
   if (error || !data) return null;
-  return data;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    company_code: row.company_code,
+    safety_email: row.safety_email,
+  };
 }
 
 function nameToAvatar(name) {
