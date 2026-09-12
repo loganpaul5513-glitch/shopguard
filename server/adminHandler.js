@@ -104,16 +104,24 @@ function shapeCompany(row) {
 }
 
 async function loadTickets(supabase) {
-  const { data, error } = await supabase
+  let result = await supabase
     .from("support_tickets")
-    .select("id, sender_email, sender_name, subject, body_text, received_at, created_at, resolved, resolved_at")
+    .select("id, sender_email, sender_name, company_name, subject, body_text, received_at, created_at, resolved, resolved_at")
     .order("received_at", { ascending: false });
+  if (result.error && /company_name/i.test(result.error.message || "")) {
+    result = await supabase
+      .from("support_tickets")
+      .select("id, sender_email, sender_name, subject, body_text, received_at, created_at, resolved, resolved_at")
+      .order("received_at", { ascending: false });
+  }
+  const { data, error } = result;
   if (error) throw error;
   return (data || []).map((row) => ({
     id: row.id,
     sender: row.sender_name ? `${row.sender_name} <${row.sender_email}>` : row.sender_email,
     senderEmail: row.sender_email,
     senderName: row.sender_name || "",
+    companyName: row.company_name || "",
     subject: row.subject || "(no subject)",
     body: row.body_text || "",
     date: row.received_at || row.created_at,

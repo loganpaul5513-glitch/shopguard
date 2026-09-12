@@ -54,7 +54,6 @@ export default function AdminDashboard({ s, LogoMark, onExit }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [expandedTicketId, setExpandedTicketId] = useState(null);
   const [ticketFilter, setTicketFilter] = useState("open");
   const [resolvingId, setResolvingId] = useState("");
 
@@ -332,10 +331,10 @@ export default function AdminDashboard({ s, LogoMark, onExit }) {
         {tab === "inbox" && (
           <>
             <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 8 }}>
-              support@shopguardapp.com
+              Support tickets
             </div>
             <div style={{ fontSize: 13, color: "#888", marginBottom: 16, lineHeight: 1.5 }}>
-              Inbound mail is saved by the Resend webhook into support_tickets.
+              Website contact form submissions and mail to support@shopguardapp.com.
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
@@ -371,50 +370,61 @@ export default function AdminDashboard({ s, LogoMark, onExit }) {
               </div>
             )}
 
-            {visibleTickets.map((ticket) => {
-              const expanded = expandedTicketId === ticket.id;
-              return (
-                <div key={ticket.id} style={{ ...s.incidentCard, cursor: "default", opacity: ticket.resolved ? 0.72 : 1 }}>
-                  <button
-                    onClick={() => setExpandedTicketId(expanded ? null : ticket.id)}
-                    style={{ background: "none", border: "none", padding: 0, width: "100%", textAlign: "left", color: "inherit", fontFamily: "inherit", cursor: "pointer" }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
-                      <div style={{ fontSize: 16, fontWeight: 800, color: "#e8e8e0" }}>{ticket.subject}</div>
-                      <span style={s.badge(ticket.resolved ? "green" : "orange")}>
-                        {ticket.resolved ? "RESOLVED" : "OPEN"}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 13, color: "#aaa", marginBottom: 4 }}>{ticket.sender}</div>
-                    <div style={{ fontSize: 12, color: "#888" }}>{formatDateTime(ticket.date)}</div>
-                  </button>
-                  {expanded && (
-                    <div style={{ marginTop: 12, borderTop: "1px solid #2a2e3a", paddingTop: 12 }}>
-                      <div style={{ fontSize: 14, color: "#e8e8e0", whiteSpace: "pre-wrap", lineHeight: 1.5, marginBottom: 14 }}>
-                        {ticket.body || "No message body."}
-                      </div>
-                      {ticket.resolved ? (
-                        <button
-                          style={{ ...s.backBtn, width: "100%", padding: 12 }}
-                          disabled={resolvingId === ticket.id}
-                          onClick={() => handleResolve(ticket, false)}
-                        >
-                          {resolvingId === ticket.id ? "UPDATING..." : "REOPEN"}
-                        </button>
-                      ) : (
-                        <button
-                          style={{ ...s.primaryBtn, opacity: resolvingId === ticket.id ? 0.6 : 1 }}
-                          disabled={resolvingId === ticket.id}
-                          onClick={() => handleResolve(ticket, true)}
-                        >
-                          {resolvingId === ticket.id ? "SAVING..." : "MARK AS RESOLVED"}
-                        </button>
-                      )}
-                    </div>
+            {visibleTickets.map((ticket) => (
+              <div key={ticket.id} style={{ ...s.incidentCard, cursor: "default", opacity: ticket.resolved ? 0.72 : 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 0.5, color: "#e8e8e0" }}>
+                    {ticket.senderName || "Unknown sender"}
+                  </div>
+                  <span style={s.badge(ticket.resolved ? "green" : "orange")}>
+                    {ticket.resolved ? "RESOLVED" : "OPEN"}
+                  </span>
+                </div>
+                <div style={s.detailRow}>
+                  <span style={s.detailLabel}>Company</span>
+                  <span style={{ color: "#ccc", textAlign: "right" }}>{ticket.companyName || "—"}</span>
+                </div>
+                <div style={s.detailRow}>
+                  <span style={s.detailLabel}>Email</span>
+                  <span style={{ color: "#ccc", textAlign: "right" }}>{ticket.senderEmail || "—"}</span>
+                </div>
+                <div style={s.detailRow}>
+                  <span style={s.detailLabel}>Received</span>
+                  <span>{formatDateTime(ticket.date)}</span>
+                </div>
+                {ticket.subject && ticket.subject !== "Website contact form" && ticket.subject !== "(no subject)" && (
+                  <div style={s.detailRow}>
+                    <span style={s.detailLabel}>Subject</span>
+                    <span style={{ color: "#ccc", textAlign: "right" }}>{ticket.subject}</span>
+                  </div>
+                )}
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #2a2e3a" }}>
+                  <div style={{ fontSize: 11, letterSpacing: 2, color: "#888", textTransform: "uppercase", marginBottom: 8 }}>
+                    Message
+                  </div>
+                  <div style={{ fontSize: 14, color: "#e8e8e0", whiteSpace: "pre-wrap", lineHeight: 1.5, marginBottom: 14 }}>
+                    {ticket.body || "No message body."}
+                  </div>
+                  {ticket.resolved ? (
+                    <button
+                      style={{ ...s.backBtn, width: "100%", padding: 12 }}
+                      disabled={resolvingId === ticket.id}
+                      onClick={() => handleResolve(ticket, false)}
+                    >
+                      {resolvingId === ticket.id ? "UPDATING..." : "REOPEN"}
+                    </button>
+                  ) : (
+                    <button
+                      style={{ ...s.primaryBtn, opacity: resolvingId === ticket.id ? 0.6 : 1 }}
+                      disabled={resolvingId === ticket.id}
+                      onClick={() => handleResolve(ticket, true)}
+                    >
+                      {resolvingId === ticket.id ? "SAVING..." : "MARK AS RESOLVED"}
+                    </button>
                   )}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </>
         )}
       </div>
