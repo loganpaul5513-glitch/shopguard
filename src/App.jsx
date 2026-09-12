@@ -90,13 +90,11 @@ async function generateUniqueCompanyCode() {
   for (let attempt = 0; attempt < 20; attempt++) {
     const digits = String(Math.floor(1000 + Math.random() * 9000));
     const code = `AMS-${digits}`;
-    const { data, error } = await supabase
-      .from("companies")
-      .select("id")
-      .ilike("company_code", code)
-      .maybeSingle();
+    const { data: taken, error } = await supabase.rpc("company_code_taken", {
+      p_code: code,
+    });
     if (error) throw error;
-    if (!data) return code;
+    if (!taken) return code;
   }
   throw new Error("Could not generate a unique company code. Please try again.");
 }
@@ -1575,19 +1573,17 @@ export default function ShopGuard() {
       const companyCode = await generateUniqueCompanyCode();
       const hashedPassword = await hashPin(password);
 
-      const { data: companyRow, error: companyError } = await supabase
-        .from("companies")
-        .insert({
-          name: companyName,
-          company_code: companyCode,
-          email,
-          password: hashedPassword,
-          active: true,
-        })
-        .select("id, name, company_code, safety_email")
-        .single();
+      const { data, error: companyError } = await supabase.rpc("register_company", {
+        p_name: companyName,
+        p_company_code: companyCode,
+        p_email: email,
+        p_password_hash: hashedPassword,
+        p_supervisor_name: supervisorName,
+      });
 
-      if (companyError || !companyRow) {
+      const companyRow = typeof data === "string" ? JSON.parse(data) : data;
+
+      if (companyError || !companyRow?.id) {
         console.error("Failed to create company:", companyError);
         setSignupError("Could not create company. Please try again.");
         setSignupLoading(false);
@@ -1595,27 +1591,6 @@ export default function ShopGuard() {
       }
 
       setSupabaseCompanyId(companyRow.id);
-
-      const { error: employeeError } = await supabase
-        .from("employees")
-        .insert({
-          company_id: companyRow.id,
-          company_code: companyRow.company_code,
-          name: supervisorName,
-          role: ROLES.SUPERVISOR,
-          active: true,
-        });
-
-      if (employeeError) {
-        console.error("Failed to create supervisor:", employeeError);
-        setSignupError("Company created, but supervisor setup failed. Contact support with your code: " + companyRow.company_code);
-        setSignupCompanyCode(companyRow.company_code);
-        setCompany(companyRow);
-        localStorage.setItem(STORAGE_KEY_COMPANY_CODE, companyRow.company_code);
-        setSignupLoading(false);
-        setScreen(SCREENS.SIGNUP_CONFIRM);
-        return;
-      }
 
       try {
         await sendWelcomeEmail({
