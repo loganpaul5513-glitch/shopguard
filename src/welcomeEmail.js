@@ -1,5 +1,5 @@
 const FROM_EMAIL = "ShopGuard Alerts <alerts@shopguardapp.com>";
-const APP_URL = "https://app.shopguardapp.com";
+const APP_URL = "https://shopguardapp.com";
 const SUPPORT_EMAIL = "support@shopguardapp.com";
 
 function escapeHtml(text) {
@@ -85,9 +85,9 @@ export function buildWelcomeEmailHtml({ companyName, companyCode, supervisorName
                 Get your team started
               </div>
               <div style="font-size: 14px; color: #cbd5e1; line-height: 1.6;">
-                Employees need to download the ShopGuard app at
-                <a href="${APP_URL}" style="color: #ff6b00; font-weight: 700; text-decoration: none;">${APP_URL.replace("https://", "")}</a>
-                and enter this company code to get started.
+                To get started, have your employees visit
+                <a href="${APP_URL}" style="color: #ff6b00; font-weight: 700; text-decoration: none;">shopguardapp.com</a>
+                to download the ShopGuard app. Once downloaded, they will enter your company code to get started and set up their PIN.
               </div>
 
               <table cellpadding="0" cellspacing="0" border="0" style="margin-top: 18px;">
