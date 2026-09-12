@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { supabase } from './supabase'
+import { supabase, setSupabaseCompanyId } from './supabase'
 import { applyCompanyIdFilter, fetchCompanyRecordIds } from './companyIds'
 import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './photoStorage'
 import { exportAndEmailOshaRecords } from './oshaExport'
@@ -646,9 +646,11 @@ export default function ShopGuard() {
       }
       const validated = await validateCompanyCode(saved);
       if (validated) {
+        setSupabaseCompanyId(validated.id);
         setCompany(validated);
         setScreen(SCREENS.LOGIN);
       } else {
+        setSupabaseCompanyId(null);
         localStorage.removeItem(STORAGE_KEY_COMPANY_CODE);
         setScreen(SCREENS.COMPANY_CODE);
       }
@@ -1514,6 +1516,7 @@ export default function ShopGuard() {
       return;
     }
     localStorage.setItem(STORAGE_KEY_COMPANY_CODE, validated.company_code);
+    setSupabaseCompanyId(validated.id);
     setCompany(validated);
     setCompanyCodeInput("");
     setSessionExpired(false);
@@ -1584,6 +1587,8 @@ export default function ShopGuard() {
         setSignupLoading(false);
         return;
       }
+
+      setSupabaseCompanyId(companyRow.id);
 
       const { error: employeeError } = await supabase
         .from("employees")
