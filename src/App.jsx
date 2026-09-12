@@ -571,6 +571,7 @@ export default function ShopGuard() {
   const [inspectLoggedInfo, setInspectLoggedInfo] = useState(null);
   const [machineSearch, setMachineSearch] = useState("");
   const [teamSearch, setTeamSearch] = useState("");
+  const [loginSearch, setLoginSearch] = useState("");
   const [reviewAction, setReviewAction] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectInput, setShowRejectInput] = useState(false);
@@ -2113,6 +2114,10 @@ export default function ShopGuard() {
 
   // ── LOGIN ──
   if (screen === SCREENS.LOGIN) {
+    const activeTeam = team.filter(user => user.active);
+    const filteredLoginTeam = activeTeam.filter(user =>
+      user.name.toLowerCase().includes(loginSearch.toLowerCase().trim())
+    );
     return (
       <div style={s.app}>
         <div style={{ padding: 24, paddingTop: 48 }}>
@@ -2134,11 +2139,58 @@ export default function ShopGuard() {
             </div>
           )}
           <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Select your account</div>
+          {!teamLoading && activeTeam.length > 0 && (
+            <div style={{ position: "relative", marginBottom: 16 }}>
+              <input
+                style={{
+                  ...s.input,
+                  marginBottom: 0,
+                  paddingLeft: 38,
+                  paddingRight: loginSearch ? 36 : 14,
+                  background: "#161a23",
+                  border: "1px solid #2a2e3a",
+                }}
+                placeholder="Search employees by name..."
+                value={loginSearch}
+                onChange={e => setLoginSearch(e.target.value)}
+              />
+              <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#666", pointerEvents: "none" }}>🔍</span>
+              {loginSearch && (
+                <button
+                  type="button"
+                  onClick={() => setLoginSearch("")}
+                  style={{
+                    position: "absolute",
+                    right: 8,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "transparent",
+                    border: "none",
+                    color: "#888",
+                    fontSize: 16,
+                    cursor: "pointer",
+                    padding: "4px 8px",
+                    lineHeight: 1,
+                    fontFamily: "inherit",
+                  }}
+                  title="Clear search"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          )}
           {teamLoading && <div style={{ color: "#888", letterSpacing: 2, marginBottom: 16 }}>LOADING TEAM...</div>}
-          {!teamLoading && team.filter(user => user.active).length === 0 && (
+          {!teamLoading && activeTeam.length === 0 && (
             <div style={{ color: "#888", fontSize: 13, marginBottom: 16 }}>No active employees found. A supervisor can add team members from Team Management.</div>
           )}
-          {team.filter(user => user.active).map(user => (
+          {!teamLoading && activeTeam.length > 0 && filteredLoginTeam.length === 0 && (
+            <div style={{ color: "#888", fontSize: 13, marginBottom: 16 }}>
+              No employees found matching "{loginSearch}".
+            </div>
+          )}
+          {filteredLoginTeam.map(user => (
             <button key={user.id} onClick={() => selectEmployeeForLogin(user)}
               style={{ display: "flex", alignItems: "center", gap: 14, background: "#161a23", border: "1px solid #2a2e3a", borderLeft: `4px solid ${ROLE_COLORS[user.role]}`, padding: "14px 16px", marginBottom: 10, cursor: "pointer", width: "100%", textAlign: "left", fontFamily: "inherit" }}>
               <div style={s.avatar(user.role)}>{user.avatar}</div>
