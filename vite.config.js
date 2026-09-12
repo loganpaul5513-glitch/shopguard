@@ -1,5 +1,23 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import fs from 'node:fs'
+import path from 'node:path'
+import { handleAdminRequest } from './server/adminHandler.js'
+import { handleInboundEmailRequest } from './server/inboundEmailHandler.js'
+
+function adminStaticRoutePlugin() {
+  return {
+    name: 'admin-static-route',
+    writeBundle(options) {
+      const distDir = options.dir || path.resolve('dist')
+      const indexPath = path.join(distDir, 'index.html')
+      if (!fs.existsSync(indexPath)) return
+      const adminDir = path.join(distDir, 'admin')
+      fs.mkdirSync(adminDir, { recursive: true })
+      fs.copyFileSync(indexPath, path.join(adminDir, 'index.html'))
+    },
+  }
+}
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -91,15 +109,23 @@ async function handleSendEmail(req, res, env) {
   }
 }
 
-function sendEmailDevPlugin(env) {
+function apiDevPlugin(env) {
   const attach = (server) => {
-    server.middlewares.use('/api/sendEmail', (req, res) => {
-      handleSendEmail(req, res, env)
-    })
+    const wrap = (handler) => (req, res) => {
+      Promise.resolve(handler(req, res, env)).catch((err) => {
+        if (res.headersSent) return
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ message: err.message || 'Request failed.' }))
+      })
+    }
+    server.middlewares.use('/api/sendEmail', wrap(handleSendEmail))
+    server.middlewares.use('/api/admin', wrap(handleAdminRequest))
+    server.middlewares.use('/api/inboundEmail', wrap(handleInboundEmailRequest))
   }
 
   return {
-    name: 'send-email-dev',
+    name: 'shopguard-api-dev',
     configureServer: attach,
     configurePreviewServer: attach,
   }
@@ -110,6 +136,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
 
   return {
-    plugins: [react(), sendEmailDevPlugin(env)],
+    appType: 'spa',
+    plugins: [react(), apiDevPlugin(env), adminStaticRoutePlugin()],
   }
 })

@@ -4,6 +4,8 @@ import { applyCompanyIdFilter, fetchCompanyRecordIds } from './companyIds'
 import { uploadPhotoFromDataUrl, uploadPlaceholderPhoto, isPhotoUrl } from './photoStorage'
 import { exportAndEmailOshaRecords } from './oshaExport'
 import { sendWelcomeEmail } from './welcomeEmail'
+import AdminDashboard from './AdminDashboard'
+import { ADMIN_TOKEN_KEY, isAdminRoute, openAdminRoute } from './adminAccess'
 
 const STORAGE_KEY_COMPANY_CODE = "shopguard_company_code";
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes of inactivity
@@ -43,6 +45,8 @@ const SCREENS = {
   MAINTENANCE_SCHEDULE: "maintenance_schedule",
   MAINTENANCE_NEW: "maintenance_new",
   MY_TASKS: "my_tasks",
+  ADMIN_LOGIN: "admin_login",
+  ADMIN_DASHBOARD: "admin_dashboard",
 };
 
 const ROLES = {
@@ -514,7 +518,7 @@ function CorrectiveActionForm({ incidentId, team, onSave, s }) {
 
 export default function ShopGuard() {
   const s = getS();
-  const [bootstrapping, setBootstrapping] = useState(true);
+  const [bootstrapping, setBootstrapping] = useState(() => !isAdminRoute());
   const [company, setCompany] = useState(null);
   const [companyCodeInput, setCompanyCodeInput] = useState("");
   const [companyCodeError, setCompanyCodeError] = useState("");
@@ -535,7 +539,9 @@ export default function ShopGuard() {
   const [pinError, setPinError] = useState("");
   const [pinLoading, setPinLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
-  const [screen, setScreen] = useState(SCREENS.COMPANY_CODE);
+  const [screen, setScreen] = useState(() => (
+    isAdminRoute() ? SCREENS.ADMIN_LOGIN : SCREENS.COMPANY_CODE
+  ));
   const [sessionExpired, setSessionExpired] = useState(false);
   const [machines, setMachines] = useState([]);
   const [team, setTeam] = useState([]);
@@ -639,16 +645,75 @@ export default function ShopGuard() {
   const [logTrainingType, setLogTrainingType] = useState("");
   const [logTrainingDate, setLogTrainingDate] = useState("");
   const [trainingLogged, setTrainingLogged] = useState(false);
+  const secretTapTimesRef = useRef([]);
+
+  function enterAdminScreen() {
+    openAdminRoute();
+    let token = "";
+    try {
+      token = sessionStorage.getItem(ADMIN_TOKEN_KEY) || "";
+    } catch {
+      token = "";
+    }
+    setScreen(token ? SCREENS.ADMIN_DASHBOARD : SCREENS.ADMIN_LOGIN);
+  }
+
+  function handleSecretLogoTap() {
+    const now = Date.now();
+    secretTapTimesRef.current = [...secretTapTimesRef.current.filter((t) => now - t < 3000), now];
+    if (secretTapTimesRef.current.length >= 7) {
+      secretTapTimesRef.current = [];
+      enterAdminScreen();
+    }
+  }
+
+  async function exitAdmin() {
+    try {
+      sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+    } catch {
+      /* ignore */
+    }
+    const saved = localStorage.getItem(STORAGE_KEY_COMPANY_CODE);
+    if (!saved) {
+      setScreen(SCREENS.COMPANY_CODE);
+      return;
+    }
+    const validated = await validateCompanyCode(saved);
+    if (validated) {
+      setSupabaseCompanyId(validated.id);
+      setCompany(validated);
+      setScreen(SCREENS.LOGIN);
+    } else {
+      setSupabaseCompanyId(null);
+      localStorage.removeItem(STORAGE_KEY_COMPANY_CODE);
+      setScreen(SCREENS.COMPANY_CODE);
+    }
+  }
 
   useEffect(() => {
+    let cancelled = false;
     async function bootstrap() {
+      if (isAdminRoute()) {
+        enterAdminScreen();
+        setBootstrapping(false);
+        return;
+      }
       const saved = localStorage.getItem(STORAGE_KEY_COMPANY_CODE);
       if (!saved) {
-        setBootstrapping(false);
-        setScreen(SCREENS.COMPANY_CODE);
+        if (!cancelled && !isAdminRoute()) {
+          setBootstrapping(false);
+          setScreen(SCREENS.COMPANY_CODE);
+        }
         return;
       }
       const validated = await validateCompanyCode(saved);
+      if (cancelled || isAdminRoute()) {
+        if (isAdminRoute()) {
+          enterAdminScreen();
+          setBootstrapping(false);
+        }
+        return;
+      }
       if (validated) {
         setSupabaseCompanyId(validated.id);
         setCompany(validated);
@@ -661,6 +726,21 @@ export default function ShopGuard() {
       setBootstrapping(false);
     }
     bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function onAdminRouteChange() {
+      if (isAdminRoute()) enterAdminScreen();
+    }
+    window.addEventListener("hashchange", onAdminRouteChange);
+    window.addEventListener("popstate", onAdminRouteChange);
+    return () => {
+      window.removeEventListener("hashchange", onAdminRouteChange);
+      window.removeEventListener("popstate", onAdminRouteChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -1737,7 +1817,9 @@ export default function ShopGuard() {
       screen !== SCREENS.SIGNUP_CONFIRM &&
       screen !== SCREENS.LOGIN &&
       screen !== SCREENS.PIN_SETUP &&
-      screen !== SCREENS.PIN_VERIFY;
+      screen !== SCREENS.PIN_VERIFY &&
+      screen !== SCREENS.ADMIN_LOGIN &&
+      screen !== SCREENS.ADMIN_DASHBOARD;
 
     if (!isLoggedIn) {
       if (sessionTimerRef.current) {
@@ -1843,6 +1925,10 @@ export default function ShopGuard() {
 
   if (showCamera) return <CameraModal onClose={() => setShowCamera(false)} onCapture={handleCapture} uploading={photoUploading} />;
 
+  if (screen === SCREENS.ADMIN_LOGIN || screen === SCREENS.ADMIN_DASHBOARD) {
+    return <AdminDashboard s={s} LogoMark={LogoMark} onExit={exitAdmin} />;
+  }
+
   if (bootstrapping) {
     return (
       <div style={s.app}>
@@ -1860,7 +1946,11 @@ export default function ShopGuard() {
       <div style={s.app}>
         <div style={{ padding: 24, paddingTop: 48 }}>
           <div style={{ marginBottom: 32, textAlign: "center" }}>
-            <div style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
+            <div
+              onClick={handleSecretLogoTap}
+              data-owner-tap="1"
+              style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4, userSelect: "none" }}
+            >Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
             <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>SHOP SAFETY PLATFORM</div>
           </div>
           <div style={{ fontSize: 11, letterSpacing: 3, color: "#ff6b00", textTransform: "uppercase", fontWeight: 700, marginBottom: 14 }}>Enter company code</div>
@@ -2109,7 +2199,11 @@ export default function ShopGuard() {
       <div style={s.app}>
         <div style={{ padding: 24, paddingTop: 48 }}>
           <div style={{ marginBottom: 32, textAlign: "center" }}>
-            <div style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
+            <div
+              onClick={handleSecretLogoTap}
+              data-owner-tap="1"
+              style={{ ...s.logo, fontSize: 36, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4, userSelect: "none" }}
+            >Shop<span style={{ color: "#ff6b00" }}>Guard</span><LogoMark size={36} /></div>
             <div style={{ ...s.logoSub, fontSize: 12, display: "block" }}>SHOP SAFETY PLATFORM</div>
             {company?.name && <div style={{ fontSize: 13, color: "#888", marginTop: 12 }}>{company.name}</div>}
           </div>
